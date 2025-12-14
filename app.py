@@ -6,6 +6,7 @@ import shutil
 import logging
 from typing import Any
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 # Delay loading the whisper model until startup so we can verify ffmpeg first
 model = None
@@ -33,6 +34,25 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+@app.get("/v1/models")
+async def list_models() -> dict[str, Any]:
+    """List available models compatible with OpenAI API."""
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": "whisper-1",
+                "object": "model",
+                "owned_by": "openai",
+                "permission": [],
+                "created": int(datetime.now().timestamp()),
+                "root": "whisper-1",
+                "parent": None
+            }
+        ]
+    }
+
 
 @app.post("/v1/audio/transcriptions")
 async def transcribe(file: UploadFile = File(...), model_name: str = Form("whisper-1"))-> dict[str, Any]:
