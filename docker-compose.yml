@@ -12,6 +12,8 @@ services:
               driver: nvidia
     ports:
       - "5148:5000"
+    volumes:
+      - /mnt/ssd1/whisper/models:/app/models
     networks:
       - infra-net
     restart: unless-stopped

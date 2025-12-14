@@ -13,6 +13,8 @@ model = None
 UPLOAD_FOLDER: str = "./whisper_service"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+MODELS_DOWNLOAD_ROOT = "./models"
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -22,7 +24,7 @@ async def lifespan(app: FastAPI):
         raise RuntimeError("ffmpeg not found. Install ffmpeg in the container or host.")
     global model
     # Load model after verifying dependencies
-    model = whisper.load_model("turbo")  # You can use "medium" or "large" if GPU is available
+    model = whisper.load_model("turbo", download_root=MODELS_DOWNLOAD_ROOT)  # You can use "medium" or "large" if GPU is available
     try:
         yield
     finally:
