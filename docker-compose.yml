@@ -2,9 +2,14 @@ services:
   whisper-api:
     build: .
     container_name: whisper-api
-    runtime: nvidia
-    environment:
-      - NVIDIA_VISIBLE_DEVICES=all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities:
+                - gpu
+              count: all
+              driver: nvidia
     ports:
       - "5148:5000"
     networks:
