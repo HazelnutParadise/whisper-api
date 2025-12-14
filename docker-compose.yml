@@ -1,0 +1,16 @@
+services:
+  whisper-api:
+    build: .
+    container_name: whisper-api
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    ports:
+      - "5148:5000"
+    networks:
+      - infra-net
+    restart: unless-stopped
+
+networks:
+  infra-net:
+    external: true
