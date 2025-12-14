@@ -3,13 +3,26 @@ import whisper
 import os
 import uuid
 import shutil
+import logging
 from typing import Any
 
 app = FastAPI()
-model: whisper.Whisper = whisper.load_model("turbo")  # You can use "medium" or "large" if GPU is available
+# Delay loading the whisper model until startup so we can verify ffmpeg first
+model = None
 
 UPLOAD_FOLDER: str = "./whisper_service"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+
+@app.on_event("startup")
+async def startup_event():
+    # Ensure ffmpeg is available — whisper's audio loader uses ffmpeg subprocess
+    if shutil.which("ffmpeg") is None:
+        logging.error("ffmpeg not found in PATH. Please install ffmpeg in the container or host.")
+        raise RuntimeError("ffmpeg not found. Install ffmpeg in the container or host.")
+    global model
+    # Load model after verifying dependencies
+    model = whisper.load_model("turbo")  # You can use "medium" or "large" if GPU is available
 
 @app.post("/v1/audio/transcriptions")
 async def transcribe(file: UploadFile = File(...), model_name: str = Form("whisper-1"))-> dict[str, Any]:
@@ -20,6 +33,9 @@ async def transcribe(file: UploadFile = File(...), model_name: str = Form("whisp
     filepath: str = os.path.join(UPLOAD_FOLDER, filename)
     with open(filepath, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
+
+    if model is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
 
     result: dict = model.transcribe(filepath)
     
