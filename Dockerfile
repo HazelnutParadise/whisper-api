@@ -1,7 +1,7 @@
 FROM nvidia/cuda:12.6.3-cudnn-runtime-rockylinux8
 
 RUN dnf update -y && \
-    dnf install -y ffmpeg git python3-pip && \
+    dnf install -y python3-pip && \
     dnf clean all
 WORKDIR /app
 
