@@ -1,6 +1,5 @@
-numpy      
-fastapi
-uvicorn
-openai-whisper
-torch
---extra-index-url https://download.pytorch.org/whl/cu126
+fastapi>=0.124.4
+numpy>=2.3.5
+openai-whisper>=20250625
+torch>=2.9.1
+uvicorn>=0.38.0
