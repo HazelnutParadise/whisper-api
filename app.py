@@ -5,8 +5,8 @@ import uuid
 import shutil
 import logging
 from typing import Any
+from contextlib import asynccontextmanager
 
-app = FastAPI()
 # Delay loading the whisper model until startup so we can verify ffmpeg first
 model = None
 
@@ -14,8 +14,8 @@ UPLOAD_FOLDER: str = "./whisper_service"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     # Ensure ffmpeg is available — whisper's audio loader uses ffmpeg subprocess
     if shutil.which("ffmpeg") is None:
         logging.error("ffmpeg not found in PATH. Please install ffmpeg in the container or host.")
@@ -23,6 +23,14 @@ async def startup_event():
     global model
     # Load model after verifying dependencies
     model = whisper.load_model("turbo")  # You can use "medium" or "large" if GPU is available
+    try:
+        yield
+    finally:
+        # Optional cleanup on shutdown
+        model = None
+
+
+app = FastAPI(lifespan=lifespan)
 
 @app.post("/v1/audio/transcriptions")
 async def transcribe(file: UploadFile = File(...), model_name: str = Form("whisper-1"))-> dict[str, Any]:
