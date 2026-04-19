@@ -2,6 +2,8 @@ services:
   whisper-api:
     build: .
     container_name: whisper-api
+    environment:
+      WHISPERX_HF_TOKEN: ${WHISPERX_HF_TOKEN}
     deploy:
       resources:
         reservations:

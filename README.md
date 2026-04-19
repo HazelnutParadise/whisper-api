@@ -27,6 +27,15 @@ export WHISPERX_COMPUTE_TYPE=float16
 export WHISPERX_BATCH_SIZE=16
 ```
 
+If you run the service with Docker Compose, create a local `.env` file in the
+project root and set:
+
+```bash
+WHISPERX_HF_TOKEN=hf_xxx
+```
+
+The provided `docker-compose.yml` forwards this variable into the container.
+
 For CPU-only execution:
 
 ```bash
