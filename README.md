@@ -73,6 +73,9 @@ Form fields:
 - `min_speakers`: optional integer
 - `max_speakers`: optional integer
 
+If a required WhisperX asset has not been downloaded yet, the service starts a
+background download and returns `202 Accepted`. Retry the same request shortly.
+
 ## Behavior
 
 ### Simple mode
@@ -91,6 +94,16 @@ Response:
 }
 ```
 
+If the ASR model is still downloading:
+
+```json
+{
+  "status": "model_downloading",
+  "detail": "Requested model assets are downloading. Retry shortly.",
+  "resources": ["asr:turbo"]
+}
+```
+
 ### Advanced mode
 
 If `advanced=true`:
@@ -98,6 +111,8 @@ If `advanced=true`:
 - full WhisperX response is returned
 - if `diarize=true`, speaker diarization is attempted
 - diarization requires `WHISPERX_HF_TOKEN` or `HF_TOKEN`
+- if `language` is omitted, the first successful ASR pass may still return
+  `202 Accepted` while the detected language's alignment model downloads
 
 Response:
 

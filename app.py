@@ -2,6 +2,7 @@ import importlib
 import logging
 import os
 import shutil
+import threading
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -10,6 +11,7 @@ from typing import Any
 
 import torch
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 
@@ -27,6 +29,9 @@ SUPPORTED_TRANSCRIPTION_MODELS = {
 whisperx_models: dict[str, Any] = {}
 whisperx_align_models: dict[str, tuple[Any, Any]] = {}
 whisperx_diarization_pipeline: Any | None = None
+runtime_asset_states: dict[str, str] = {}
+runtime_asset_errors: dict[str, str] = {}
+runtime_asset_lock = threading.Lock()
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(MODELS_DOWNLOAD_ROOT, exist_ok=True)
@@ -34,6 +39,14 @@ os.makedirs(MODELS_DOWNLOAD_ROOT, exist_ok=True)
 
 class ErrorResponse(BaseModel):
     detail: str = Field(description="Human-readable error message.")
+
+
+class ModelDownloadPendingResponse(BaseModel):
+    status: str = Field(description="Machine-readable pending status.")
+    detail: str = Field(description="Human-readable pending message.")
+    resources: list[str] = Field(
+        description="Model resources that are still downloading.",
+    )
 
 
 class WordTimestamp(BaseModel):
@@ -212,6 +225,134 @@ def get_diarization_pipeline() -> Any:
     return whisperx_diarization_pipeline
 
 
+class ModelDownloadPendingError(Exception):
+    """Raised when a required model asset is still downloading."""
+
+    def __init__(self, response: ModelDownloadPendingResponse):
+        super().__init__(response.detail)
+        self.response = response
+
+
+def _mark_runtime_asset_ready(resource: str) -> None:
+    """Mark a runtime model asset as available."""
+    with runtime_asset_lock:
+        runtime_asset_states[resource] = "ready"
+        runtime_asset_errors.pop(resource, None)
+
+
+def _mark_runtime_asset_failed(resource: str, exc: Exception) -> None:
+    """Mark a runtime model asset download as failed."""
+    with runtime_asset_lock:
+        runtime_asset_states[resource] = "failed"
+        runtime_asset_errors[resource] = str(exc)
+
+
+def _download_runtime_asset(resource: str, loader: Any) -> None:
+    """Download a runtime asset in the background."""
+    try:
+        loader()
+    except Exception as exc:  # pragma: no cover - thread scheduling timing
+        logger.exception("Runtime asset download failed: %s", resource)
+        _mark_runtime_asset_failed(resource, exc)
+        return
+
+    _mark_runtime_asset_ready(resource)
+
+
+def ensure_runtime_asset(
+    *,
+    resource: str,
+    is_ready: Any,
+    loader: Any,
+) -> str | None:
+    """Ensure an asset is ready or queue a background download."""
+    if is_ready():
+        _mark_runtime_asset_ready(resource)
+        return None
+
+    with runtime_asset_lock:
+        state = runtime_asset_states.get(resource)
+        if state == "running":
+            return resource
+
+        runtime_asset_states[resource] = "running"
+        runtime_asset_errors.pop(resource, None)
+
+    threading.Thread(
+        target=_download_runtime_asset,
+        args=(resource, loader),
+        daemon=True,
+    ).start()
+    return resource
+
+
+def build_download_pending_response(
+    resources: list[str],
+) -> ModelDownloadPendingResponse:
+    """Build the API response for background model downloads."""
+    return ModelDownloadPendingResponse(
+        status="model_downloading",
+        detail="Requested model assets are downloading. Retry shortly.",
+        resources=resources,
+    )
+
+
+def get_diarization_resource_name() -> str:
+    """Return the configured diarization resource identifier."""
+    return os.getenv(
+        "WHISPERX_DIARIZATION_MODEL",
+        "pyannote/speaker-diarization-community-1",
+    )
+
+
+def ensure_runtime_assets_ready(
+    *,
+    model_name: str,
+    language: str | None,
+    diarize: bool,
+) -> ModelDownloadPendingResponse | None:
+    """Queue required downloads and report pending assets."""
+    pending_resources: list[str] = []
+    backend_model_name = get_whisperx_backend_model_name(model_name)
+
+    pending_resource = ensure_runtime_asset(
+        resource=f"asr:{backend_model_name}",
+        is_ready=lambda: model_name in whisperx_models,
+        loader=lambda: get_whisperx_model(model_name),
+    )
+    if pending_resource is not None:
+        pending_resources.append(pending_resource)
+
+    if language:
+        pending_resource = ensure_runtime_asset(
+            resource=f"align:{language}",
+            is_ready=lambda: language in whisperx_align_models,
+            loader=lambda: get_align_model(language),
+        )
+        if pending_resource is not None:
+            pending_resources.append(pending_resource)
+
+    if diarize:
+        if not get_diarization_token():
+            raise HTTPException(
+                status_code=503,
+                detail="WhisperX diarization requires WHISPERX_HF_TOKEN or HF_TOKEN.",
+            )
+
+        pending_resource = ensure_runtime_asset(
+            resource=f"diarization:{get_diarization_resource_name()}",
+            is_ready=lambda: whisperx_diarization_pipeline is not None,
+            loader=get_diarization_pipeline,
+        )
+        if pending_resource is not None:
+            pending_resources.append(pending_resource)
+
+    if pending_resources:
+        return build_download_pending_response(pending_resources)
+
+    return None
+
+
 def save_upload_file(file: UploadFile) -> str:
     """Persist an uploaded file and return the temporary path."""
     if not file.filename:
@@ -322,6 +463,14 @@ def build_whisperx_response(
             detail="WhisperX did not return a detected language.",
         )
 
+    pending_response = ensure_runtime_assets_ready(
+        model_name=model_name,
+        language=detected_language,
+        diarize=diarize,
+    )
+    if pending_response is not None:
+        raise ModelDownloadPendingError(pending_response)
+
     model_a, metadata = get_align_model(detected_language)
     aligned_result = whisperx.align(
         result["segments"],
@@ -428,6 +577,10 @@ async def list_models() -> dict[str, Any]:
     ),
     response_model=TranscriptionSimpleResponse | TranscriptionAdvancedResponse,
     responses={
+        202: {
+            "model": ModelDownloadPendingResponse,
+            "description": "Required model assets are downloading in the background.",
+        },
         400: {
             "model": ErrorResponse,
             "description": "The request used an unsupported model name or invalid input.",
@@ -492,18 +645,35 @@ async def transcribe(
 ) -> TranscriptionSimpleResponse | TranscriptionAdvancedResponse:
     """Transcribe audio using WhisperX behind the legacy endpoint."""
     get_whisperx_backend_model_name(model_name)
+    effective_diarize = advanced and diarize
+    pending_response = ensure_runtime_assets_ready(
+        model_name=model_name,
+        language=language,
+        diarize=effective_diarize,
+    )
+    if pending_response is not None:
+        return JSONResponse(
+            status_code=202,
+            content=pending_response.model_dump(),
+        )
+
     filepath = save_upload_file(file)
 
     try:
-        effective_diarize = advanced and diarize
-        response = build_whisperx_response(
-            filepath=filepath,
-            model_name=model_name,
-            language=language,
-            diarize=effective_diarize,
-            min_speakers=min_speakers,
-            max_speakers=max_speakers,
-        )
+        try:
+            response = build_whisperx_response(
+                filepath=filepath,
+                model_name=model_name,
+                language=language,
+                diarize=effective_diarize,
+                min_speakers=min_speakers,
+                max_speakers=max_speakers,
+            )
+        except ModelDownloadPendingError as exc:
+            return JSONResponse(
+                status_code=202,
+                content=exc.response.model_dump(),
+            )
         if not advanced:
             return TranscriptionSimpleResponse(text=response.text)
         return response

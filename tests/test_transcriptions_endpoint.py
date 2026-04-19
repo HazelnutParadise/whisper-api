@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import tempfile
 import unittest
@@ -141,6 +142,14 @@ class TranscriptionsEndpointTests(unittest.TestCase):
                 create=True,
             )
         )
+        stack.enter_context(
+            patch.object(
+                whisper_app,
+                "ensure_runtime_assets_ready",
+                return_value=None,
+                create=True,
+            )
+        )
         if env.get("WHISPERX_HF_TOKEN") or env.get("HF_TOKEN"):
             stack.enter_context(
                 patch.object(
@@ -157,6 +166,44 @@ class TranscriptionsEndpointTests(unittest.TestCase):
 
     def make_upload(self):
         return UploadFile(filename="sample.wav", file=BytesIO(b"audio"))
+
+    def test_returns_202_when_model_download_starts(self):
+        pending_response = whisper_app.ModelDownloadPendingResponse(
+            status="model_downloading",
+            detail="Requested model assets are downloading. Retry shortly.",
+            resources=["asr:turbo"],
+        )
+
+        with (
+            patch.object(
+                whisper_app,
+                "ensure_runtime_assets_ready",
+                return_value=pending_response,
+                create=True,
+            ),
+            patch.object(
+                whisper_app,
+                "save_upload_file",
+                side_effect=AssertionError("upload should not be persisted yet"),
+                create=True,
+            ),
+        ):
+            response = asyncio.run(
+                whisper_app.transcribe(
+                    file=self.make_upload(),
+                    model_name="whisper-1",
+                    language=None,
+                    advanced=False,
+                    diarize=True,
+                    min_speakers=None,
+                    max_speakers=None,
+                )
+            )
+
+        self.assertEqual(response.status_code, 202)
+        payload = json.loads(response.body)
+        self.assertEqual(payload["status"], "model_downloading")
+        self.assertEqual(payload["resources"], ["asr:turbo"])
 
     def test_simple_transcription_uses_legacy_whisper_model_alias(self):
         stack, route_paths = self.build_context({})
