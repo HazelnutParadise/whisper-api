@@ -173,9 +173,10 @@ class TranscriptionsEndpointTests(unittest.TestCase):
                 )
             )
 
+        payload_data = payload.model_dump()
         self.assertIn("/v1/audio/transcriptions", route_paths)
         self.assertNotIn("/v1/audio/transcriptions/whisperx", route_paths)
-        self.assertEqual(payload, {"text": "hello world"})
+        self.assertEqual(payload_data, {"text": "hello world"})
 
     def test_advanced_transcription_returns_timestamps_and_speakers(self):
         stack, route_paths = self.build_context(
@@ -194,12 +195,13 @@ class TranscriptionsEndpointTests(unittest.TestCase):
                 )
             )
 
+        payload_data = payload.model_dump()
         self.assertIn("/v1/audio/transcriptions", route_paths)
-        self.assertEqual(payload["text"], "hello world")
-        self.assertEqual(payload["language"], "en")
-        self.assertEqual(payload["segments"][0]["speaker"], "SPEAKER_00")
+        self.assertEqual(payload_data["text"], "hello world")
+        self.assertEqual(payload_data["language"], "en")
+        self.assertEqual(payload_data["segments"][0]["speaker"], "SPEAKER_00")
         self.assertEqual(
-            payload["segments"][0]["words"][0]["speaker"],
+            payload_data["segments"][0]["words"][0]["speaker"],
             "SPEAKER_00",
         )
 
@@ -243,6 +245,41 @@ class TranscriptionsEndpointTests(unittest.TestCase):
         self.assertEqual(raised.exception.status_code, 400)
         self.assertIn("whisper-1", str(raised.exception.detail))
         self.assertIn("turbo", str(raised.exception.detail))
+
+    def test_openapi_describes_transcription_parameters_and_responses(self):
+        schema = whisper_app.app.openapi()
+        operation = schema["paths"]["/v1/audio/transcriptions"]["post"]
+        request_body = operation["requestBody"]["content"]["multipart/form-data"][
+            "schema"
+        ]
+        body_ref = request_body["$ref"].split("/")[-1]
+        body_schema = schema["components"]["schemas"][body_ref]
+
+        self.assertIn("advanced", body_schema["properties"])
+        self.assertIn(
+            "return only `{text}`",
+            body_schema["properties"]["advanced"]["description"].lower(),
+        )
+        self.assertIn(
+            "speaker diarization",
+            body_schema["properties"]["diarize"]["description"].lower(),
+        )
+        self.assertIn(
+            "whisper-1",
+            body_schema["properties"]["model"]["description"].lower(),
+        )
+
+        response_schema = operation["responses"]["200"]["content"]["application/json"][
+            "schema"
+        ]
+        self.assertIn("anyOf", response_schema)
+        refs = [item["$ref"] for item in response_schema["anyOf"]]
+        self.assertTrue(
+            any(ref.endswith("TranscriptionSimpleResponse") for ref in refs)
+        )
+        self.assertTrue(
+            any(ref.endswith("TranscriptionAdvancedResponse") for ref in refs)
+        )
 
 
 if __name__ == "__main__":

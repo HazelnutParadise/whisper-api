@@ -10,6 +10,7 @@ from typing import Any
 
 import torch
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel, Field
 
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,79 @@ whisperx_diarization_pipeline: Any | None = None
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(MODELS_DOWNLOAD_ROOT, exist_ok=True)
+
+
+class ErrorResponse(BaseModel):
+    detail: str = Field(description="Human-readable error message.")
+
+
+class WordTimestamp(BaseModel):
+    word: str = Field(description="Recognized word token.")
+    start: float | None = Field(
+        default=None,
+        description="Word start time in seconds.",
+    )
+    end: float | None = Field(
+        default=None,
+        description="Word end time in seconds.",
+    )
+    speaker: str | None = Field(
+        default=None,
+        description="Speaker label when diarization is enabled.",
+    )
+
+
+class SegmentTimestamp(BaseModel):
+    id: int | None = Field(default=None, description="Segment index.")
+    start: float | None = Field(
+        default=None,
+        description="Segment start time in seconds.",
+    )
+    end: float | None = Field(
+        default=None,
+        description="Segment end time in seconds.",
+    )
+    text: str = Field(description="Transcript text for this segment.")
+    speaker: str | None = Field(
+        default=None,
+        description="Speaker label when diarization is enabled.",
+    )
+    words: list[WordTimestamp] | None = Field(
+        default=None,
+        description="Per-word timestamps when alignment is available.",
+    )
+
+
+class DiarizationSegment(BaseModel):
+    speaker: str | None = Field(
+        default=None,
+        description="Speaker label such as SPEAKER_00.",
+    )
+    start: float | None = Field(
+        default=None,
+        description="Speaker segment start time in seconds.",
+    )
+    end: float | None = Field(
+        default=None,
+        description="Speaker segment end time in seconds.",
+    )
+
+
+class TranscriptionSimpleResponse(BaseModel):
+    text: str = Field(description="Plain transcription text.")
+
+
+class TranscriptionAdvancedResponse(TranscriptionSimpleResponse):
+    language: str = Field(description="Detected language code.")
+    segments: list[SegmentTimestamp] = Field(
+        description="Aligned transcript segments with timestamps.",
+    )
+    diarization: list[DiarizationSegment] = Field(
+        description="Speaker diarization segments.",
+    )
+    speakers: list[str] = Field(
+        description="Unique speaker labels that appear in the audio.",
+    )
 
 
 def is_ffmpeg_available() -> bool:
@@ -198,7 +272,7 @@ def build_whisperx_response(
     diarize: bool,
     min_speakers: int | None,
     max_speakers: int | None,
-) -> dict[str, Any]:
+) -> TranscriptionAdvancedResponse:
     """Run WhisperX and return the full enriched transcription payload."""
     whisperx = get_whisperx_module()
     audio = whisperx.load_audio(filepath)
@@ -252,13 +326,13 @@ def build_whisperx_response(
         }
     )
 
-    return {
-        "text": build_whisperx_text(segments),
-        "language": detected_language,
-        "segments": segments,
-        "diarization": diarization_segments,
-        "speakers": speakers,
-    }
+    return TranscriptionAdvancedResponse(
+        text=build_whisperx_text(segments),
+        language=detected_language,
+        segments=segments,
+        diarization=diarization_segments,
+        speakers=speakers,
+    )
 
 
 @asynccontextmanager
@@ -281,7 +355,14 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
-@app.get("/v1/models")
+@app.get(
+    "/v1/models",
+    summary="List transcription models",
+    description=(
+        "Returns the model names accepted by `/v1/audio/transcriptions`. "
+        "`whisper-1` is kept for compatibility and is routed to WhisperX `turbo`."
+    ),
+)
 async def list_models() -> dict[str, Any]:
     """List available models compatible with OpenAI-style clients."""
     created_at = int(datetime.now().timestamp())
@@ -302,16 +383,79 @@ async def list_models() -> dict[str, Any]:
     }
 
 
-@app.post("/v1/audio/transcriptions")
+@app.post(
+    "/v1/audio/transcriptions",
+    summary="Transcribe audio or video",
+    description=(
+        "Uses WhisperX underneath for all requests. By default it returns only "
+        "plain transcription text for compatibility. Set `advanced=true` to "
+        "receive aligned timestamps, detected language, and optional speaker "
+        "diarization metadata."
+    ),
+    response_model=TranscriptionSimpleResponse | TranscriptionAdvancedResponse,
+    responses={
+        400: {
+            "model": ErrorResponse,
+            "description": "The request used an unsupported model name or invalid input.",
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": "A required runtime dependency such as diarization credentials is unavailable.",
+        },
+    },
+)
 async def transcribe(
-    file: UploadFile = File(...),
-    model_name: str = Form("whisper-1", alias="model"),
-    language: str | None = Form(None),
-    advanced: bool = Form(False),
-    diarize: bool = Form(True),
-    min_speakers: int | None = Form(None),
-    max_speakers: int | None = Form(None),
-) -> dict[str, Any]:
+    file: UploadFile = File(
+        ...,
+        description=(
+            "Audio or video file to transcribe. Any format supported by ffmpeg "
+            "can be uploaded."
+        ),
+    ),
+    model_name: str = Form(
+        "whisper-1",
+        alias="model",
+        description=(
+            "Transcription model name. `whisper-1` is a compatibility alias "
+            "for WhisperX `turbo`; `turbo` directly selects the same backend."
+        ),
+    ),
+    language: str | None = Form(
+        None,
+        description=(
+            "Optional language code such as `en`, `zh`, or `ja`. When omitted, "
+            "WhisperX detects the language automatically."
+        ),
+    ),
+    advanced: bool = Form(
+        False,
+        description=(
+            "When false, return only `{text}`. When true, return full WhisperX "
+            "metadata including timestamps, language, and optional diarization."
+        ),
+    ),
+    diarize: bool = Form(
+        True,
+        description=(
+            "Enable speaker diarization in advanced mode. Ignored when "
+            "`advanced=false`. Requires `WHISPERX_HF_TOKEN` or `HF_TOKEN`."
+        ),
+    ),
+    min_speakers: int | None = Form(
+        None,
+        description=(
+            "Optional lower bound for the number of speakers. Used only when "
+            "`advanced=true` and `diarize=true`."
+        ),
+    ),
+    max_speakers: int | None = Form(
+        None,
+        description=(
+            "Optional upper bound for the number of speakers. Used only when "
+            "`advanced=true` and `diarize=true`."
+        ),
+    ),
+) -> TranscriptionSimpleResponse | TranscriptionAdvancedResponse:
     """Transcribe audio using WhisperX behind the legacy endpoint."""
     get_whisperx_backend_model_name(model_name)
     filepath = save_upload_file(file)
@@ -327,7 +471,7 @@ async def transcribe(
             max_speakers=max_speakers,
         )
         if not advanced:
-            return {"text": response["text"]}
+            return TranscriptionSimpleResponse(text=response.text)
         return response
     finally:
         cleanup_file(filepath)
