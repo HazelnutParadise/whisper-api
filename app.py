@@ -234,8 +234,10 @@ def cleanup_file(filepath: str) -> None:
         os.remove(filepath)
 
 
-def serialize_diarization_segments(diarization_result: Any) -> list[dict[str, Any]]:
-    """Convert diarization output to JSON-serializable records."""
+def serialize_diarization_segments(
+    diarization_result: Any,
+) -> list[DiarizationSegment]:
+    """Convert diarization output to typed diarization models."""
     if diarization_result is None:
         return []
 
@@ -246,21 +248,52 @@ def serialize_diarization_segments(diarization_result: Any) -> list[dict[str, An
     else:
         return []
 
-    serialized: list[dict[str, Any]] = []
+    serialized: list[DiarizationSegment] = []
     for record in records:
         serialized.append(
-            {
-                "speaker": record.get("speaker"),
-                "start": record.get("start"),
-                "end": record.get("end"),
-            }
+            DiarizationSegment(
+                speaker=record.get("speaker"),
+                start=record.get("start"),
+                end=record.get("end"),
+            )
         )
     return serialized
 
 
-def build_whisperx_text(segments: list[dict[str, Any]]) -> str:
+def serialize_words(words: list[dict[str, Any]] | None) -> list[WordTimestamp] | None:
+    """Convert aligned word dictionaries to typed word models."""
+    if words is None:
+        return None
+
+    return [
+        WordTimestamp(
+            word=word.get("word", ""),
+            start=word.get("start"),
+            end=word.get("end"),
+            speaker=word.get("speaker"),
+        )
+        for word in words
+    ]
+
+
+def serialize_segments(segments: list[dict[str, Any]]) -> list[SegmentTimestamp]:
+    """Convert aligned segment dictionaries to typed segment models."""
+    return [
+        SegmentTimestamp(
+            id=segment.get("id"),
+            start=segment.get("start"),
+            end=segment.get("end"),
+            text=segment.get("text", ""),
+            speaker=segment.get("speaker"),
+            words=serialize_words(segment.get("words")),
+        )
+        for segment in segments
+    ]
+
+
+def build_whisperx_text(segments: list[SegmentTimestamp]) -> str:
     """Join aligned segment text into a single transcript string."""
-    parts = [segment.get("text", "").strip() for segment in segments]
+    parts = [segment.text.strip() for segment in segments]
     return " ".join(part for part in parts if part).strip()
 
 
@@ -300,7 +333,7 @@ def build_whisperx_response(
     )
     aligned_result["language"] = detected_language
 
-    diarization_segments: list[dict[str, Any]] = []
+    diarization_segments: list[DiarizationSegment] = []
     if diarize:
         try:
             diarization_result = get_diarization_pipeline()(
@@ -317,11 +350,12 @@ def build_whisperx_response(
         )
         diarization_segments = serialize_diarization_segments(diarization_result)
 
-    segments = aligned_result.get("segments", [])
+    raw_segments = aligned_result.get("segments", [])
+    segments = serialize_segments(raw_segments)
     speakers = sorted(
         {
             speaker
-            for speaker in (segment.get("speaker") for segment in segments)
+            for speaker in (segment.speaker for segment in segments)
             if speaker
         }
     )
