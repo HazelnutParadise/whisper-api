@@ -208,22 +208,81 @@ class TranscriptionsEndpointTests(unittest.TestCase):
     def test_simple_transcription_uses_legacy_whisper_model_alias(self):
         stack, route_paths = self.build_context({})
         with stack:
-            payload = asyncio.run(
-                whisper_app.transcribe(
-                    file=self.make_upload(),
-                    model_name="whisper-1",
-                    language=None,
-                    advanced=False,
-                    diarize=True,
-                    min_speakers=None,
-                    max_speakers=None,
+            with (
+                patch.object(
+                    FakeWhisperXModule,
+                    "load_align_model",
+                    side_effect=AssertionError(
+                        "alignment should not run for simple responses"
+                    ),
+                ),
+                patch.object(
+                    FakeWhisperXModule,
+                    "align",
+                    side_effect=AssertionError(
+                        "alignment should not run for simple responses"
+                    ),
+                ),
+            ):
+                payload = asyncio.run(
+                    whisper_app.transcribe(
+                        file=self.make_upload(),
+                        model_name="whisper-1",
+                        language=None,
+                        advanced=False,
+                        diarize=True,
+                        min_speakers=None,
+                        max_speakers=None,
+                    )
                 )
-            )
 
         payload_data = payload.model_dump()
         self.assertIn("/v1/audio/transcriptions", route_paths)
         self.assertNotIn("/v1/audio/transcriptions/whisperx", route_paths)
         self.assertEqual(payload_data, {"text": "hello world"})
+
+    def test_advanced_transcription_keeps_alignment_without_diarization(self):
+        stack, route_paths = self.build_context({})
+        with stack:
+            module = FakeWhisperXModule()
+            with (
+                patch.object(
+                    whisper_app,
+                    "get_whisperx_module",
+                    return_value=module,
+                    create=True,
+                ),
+                patch.object(
+                    whisper_app,
+                    "get_align_model",
+                    wraps=whisper_app.get_align_model,
+                ) as get_align_model,
+                patch.object(
+                    module,
+                    "align",
+                    wraps=module.align,
+                ) as align,
+            ):
+                payload = asyncio.run(
+                    whisper_app.transcribe(
+                        file=self.make_upload(),
+                        model_name="whisper-1",
+                        language=None,
+                        advanced=True,
+                        diarize=False,
+                        min_speakers=None,
+                        max_speakers=None,
+                    )
+                )
+
+        payload_data = payload.model_dump()
+        self.assertIn("/v1/audio/transcriptions", route_paths)
+        self.assertEqual(payload_data["text"], "hello world")
+        self.assertEqual(payload_data["language"], "en")
+        self.assertEqual(get_align_model.call_count, 1)
+        self.assertEqual(align.call_count, 1)
+        self.assertEqual(payload_data["diarization"], [])
+        self.assertEqual(payload_data["speakers"], [])
 
     def test_advanced_transcription_returns_timestamps_and_speakers(self):
         stack, route_paths = self.build_context(

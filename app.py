@@ -438,6 +438,29 @@ def build_whisperx_text(segments: list[SegmentTimestamp]) -> str:
     return " ".join(part for part in parts if part).strip()
 
 
+def build_simple_transcription_response(
+    *,
+    filepath: str,
+    model_name: str,
+    language: str | None,
+) -> TranscriptionSimpleResponse:
+    """Run WhisperX ASR only and return plain transcript text."""
+    whisperx = get_whisperx_module()
+    audio = whisperx.load_audio(filepath)
+    result = get_whisperx_model(model_name).transcribe(
+        audio,
+        batch_size=WHISPERX_BATCH_SIZE,
+        language=language,
+    )
+    raw_segments = result.get("segments", [])
+    text = " ".join(
+        segment.get("text", "").strip()
+        for segment in raw_segments
+        if segment.get("text")
+    ).strip()
+    return TranscriptionSimpleResponse(text=text)
+
+
 def build_whisperx_response(
     *,
     filepath: str,
@@ -648,34 +671,39 @@ async def transcribe(
     effective_diarize = advanced and diarize
     pending_response = ensure_runtime_assets_ready(
         model_name=model_name,
-        language=language,
+        language=language if advanced else None,
         diarize=effective_diarize,
     )
     if pending_response is not None:
         return JSONResponse(
             status_code=202,
             content=pending_response.model_dump(),
-        )
+        ) # type: ignore
 
     filepath = save_upload_file(file)
 
     try:
         try:
-            response = build_whisperx_response(
-                filepath=filepath,
-                model_name=model_name,
-                language=language,
-                diarize=effective_diarize,
-                min_speakers=min_speakers,
-                max_speakers=max_speakers,
-            )
+            if advanced:
+                response = build_whisperx_response(
+                    filepath=filepath,
+                    model_name=model_name,
+                    language=language,
+                    diarize=effective_diarize,
+                    min_speakers=min_speakers,
+                    max_speakers=max_speakers,
+                )
+            else:
+                response = build_simple_transcription_response(
+                    filepath=filepath,
+                    model_name=model_name,
+                    language=language,
+                )
         except ModelDownloadPendingError as exc:
             return JSONResponse(
                 status_code=202,
                 content=exc.response.model_dump(),
-            )
-        if not advanced:
-            return TranscriptionSimpleResponse(text=response.text)
+            ) # type: ignore
         return response
     finally:
         cleanup_file(filepath)
