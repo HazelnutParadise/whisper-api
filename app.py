@@ -12,7 +12,6 @@ from typing import Any
 
 import torch
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 
@@ -40,22 +39,27 @@ whisperx_align_models: dict[str, tuple[Any, Any]] = {}
 whisperx_diarization_pipeline: Any | None = None
 runtime_asset_states: dict[str, str] = {}
 runtime_asset_errors: dict[str, str] = {}
+runtime_asset_events: dict[str, threading.Event] = {}
 runtime_asset_lock = threading.Lock()
+
+HF_HOME_DEFAULT = os.path.join(MODELS_DOWNLOAD_ROOT, "hf-cache")
+os.environ.setdefault("HF_HOME", HF_HOME_DEFAULT)
+os.environ.setdefault(
+    "HUGGINGFACE_HUB_CACHE",
+    os.path.join(os.environ["HF_HOME"], "hub"),
+)
+os.environ.setdefault(
+    "TRANSFORMERS_CACHE",
+    os.path.join(os.environ["HF_HOME"], "transformers"),
+)
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(MODELS_DOWNLOAD_ROOT, exist_ok=True)
+os.makedirs(os.environ["HF_HOME"], exist_ok=True)
 
 
 class ErrorResponse(BaseModel):
     detail: str = Field(description="Human-readable error message.")
-
-
-class ModelDownloadPendingResponse(BaseModel):
-    status: str = Field(description="Machine-readable pending status.")
-    detail: str = Field(description="Human-readable pending message.")
-    resources: list[str] = Field(
-        description="Model resources that are still downloading.",
-    )
 
 
 class WordTimestamp(BaseModel):
@@ -234,19 +238,14 @@ def get_diarization_pipeline() -> Any:
     return whisperx_diarization_pipeline
 
 
-class ModelDownloadPendingError(Exception):
-    """Raised when a required model asset is still downloading."""
-
-    def __init__(self, response: ModelDownloadPendingResponse):
-        super().__init__(response.detail)
-        self.response = response
-
-
 def _mark_runtime_asset_ready(resource: str) -> None:
     """Mark a runtime model asset as available."""
     with runtime_asset_lock:
         runtime_asset_states[resource] = "ready"
         runtime_asset_errors.pop(resource, None)
+        event = runtime_asset_events.get(resource)
+        if event is not None:
+            event.set()
 
 
 def _mark_runtime_asset_failed(resource: str, exc: Exception) -> None:
@@ -254,16 +253,22 @@ def _mark_runtime_asset_failed(resource: str, exc: Exception) -> None:
     with runtime_asset_lock:
         runtime_asset_states[resource] = "failed"
         runtime_asset_errors[resource] = str(exc)
+        event = runtime_asset_events.get(resource)
+        if event is not None:
+            event.set()
 
 
-def _download_runtime_asset(resource: str, loader: Any) -> None:
-    """Download a runtime asset in the background."""
+def _load_runtime_asset(resource: str, loader: Any) -> None:
+    """Load a runtime asset and update synchronized state."""
     try:
         loader()
-    except Exception as exc:  # pragma: no cover - thread scheduling timing
-        logger.exception("Runtime asset download failed: %s", resource)
+    except Exception as exc:
+        logger.exception("Runtime asset load failed: %s", resource)
         _mark_runtime_asset_failed(resource, exc)
-        return
+        raise HTTPException(
+            status_code=503,
+            detail=f"Failed to load runtime asset '{resource}': {exc}",
+        ) from exc
 
     _mark_runtime_asset_ready(resource)
 
@@ -273,37 +278,50 @@ def ensure_runtime_asset(
     resource: str,
     is_ready: Any,
     loader: Any,
-) -> str | None:
-    """Ensure an asset is ready or queue a background download."""
-    if is_ready():
-        _mark_runtime_asset_ready(resource)
-        return None
+) -> None:
+    """Ensure an asset is ready, using single-flight loading across requests."""
+    while True:
+        if is_ready():
+            _mark_runtime_asset_ready(resource)
+            return
 
-    with runtime_asset_lock:
-        state = runtime_asset_states.get(resource)
-        if state == "running":
-            return resource
+        run_loader = False
+        event: threading.Event | None = None
+        with runtime_asset_lock:
+            state = runtime_asset_states.get(resource)
+            if state == "ready":
+                return
 
-        runtime_asset_states[resource] = "running"
-        runtime_asset_errors.pop(resource, None)
+            if state == "running":
+                event = runtime_asset_events.get(resource)
+                if event is None:
+                    event = threading.Event()
+                    runtime_asset_events[resource] = event
+            else:
+                runtime_asset_states[resource] = "running"
+                runtime_asset_errors.pop(resource, None)
+                event = threading.Event()
+                runtime_asset_events[resource] = event
+                run_loader = True
 
-    threading.Thread(
-        target=_download_runtime_asset,
-        args=(resource, loader),
-        daemon=True,
-    ).start()
-    return resource
+        if run_loader:
+            _load_runtime_asset(resource, loader)
+            return
 
+        if event is None:
+            continue
+        event.wait()
 
-def build_download_pending_response(
-    resources: list[str],
-) -> ModelDownloadPendingResponse:
-    """Build the API response for background model downloads."""
-    return ModelDownloadPendingResponse(
-        status="model_downloading",
-        detail="Requested model assets are downloading. Retry shortly.",
-        resources=resources,
-    )
+        with runtime_asset_lock:
+            state = runtime_asset_states.get(resource)
+            if state == "ready":
+                return
+            if state == "failed":
+                error = runtime_asset_errors.get(resource, "unknown error")
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Failed to load runtime asset '{resource}': {error}",
+                )
 
 
 def get_diarization_resource_name() -> str:
@@ -319,27 +337,22 @@ def ensure_runtime_assets_ready(
     model_name: str,
     language: str | None,
     diarize: bool,
-) -> ModelDownloadPendingResponse | None:
-    """Queue required downloads and report pending assets."""
-    pending_resources: list[str] = []
+) -> None:
+    """Ensure required runtime assets are loaded before transcription."""
     backend_model_name = get_whisperx_backend_model_name(model_name)
 
-    pending_resource = ensure_runtime_asset(
+    ensure_runtime_asset(
         resource=f"asr:{backend_model_name}",
         is_ready=lambda: model_name in whisperx_models,
         loader=lambda: get_whisperx_model(model_name),
     )
-    if pending_resource is not None:
-        pending_resources.append(pending_resource)
 
     if language:
-        pending_resource = ensure_runtime_asset(
+        ensure_runtime_asset(
             resource=f"align:{language}",
             is_ready=lambda: language in whisperx_align_models,
             loader=lambda: get_align_model(language),
         )
-        if pending_resource is not None:
-            pending_resources.append(pending_resource)
 
     if diarize:
         if not get_diarization_token():
@@ -348,16 +361,11 @@ def ensure_runtime_assets_ready(
                 detail="WhisperX diarization requires WHISPERX_HF_TOKEN or HF_TOKEN.",
             )
 
-        pending_resource = ensure_runtime_asset(
+        ensure_runtime_asset(
             resource=f"diarization:{get_diarization_resource_name()}",
             is_ready=lambda: whisperx_diarization_pipeline is not None,
             loader=get_diarization_pipeline,
         )
-        if pending_resource is not None:
-            pending_resources.append(pending_resource)
-
-    if pending_resources:
-        return build_download_pending_response(pending_resources)
 
     return None
 
@@ -495,13 +503,11 @@ def build_whisperx_response(
             detail="WhisperX did not return a detected language.",
         )
 
-    pending_response = ensure_runtime_assets_ready(
+    ensure_runtime_assets_ready(
         model_name=model_name,
         language=detected_language,
         diarize=diarize,
     )
-    if pending_response is not None:
-        raise ModelDownloadPendingError(pending_response)
 
     model_a, metadata = get_align_model(detected_language)
     aligned_result = whisperx.align(
@@ -982,10 +988,6 @@ async def list_models() -> dict[str, Any]:
     ),
     response_model=TranscriptionSimpleResponse | TranscriptionAdvancedResponse,
     responses={
-        202: {
-            "model": ModelDownloadPendingResponse,
-            "description": "Required model assets are downloading in the background.",
-        },
         400: {
             "model": ErrorResponse,
             "description": "The request used an unsupported model name or invalid input.",
@@ -1051,51 +1053,40 @@ async def transcribe(
     """Transcribe audio using WhisperX behind the legacy endpoint."""
     get_whisperx_backend_model_name(model_name)
     effective_diarize = advanced and diarize
-    pending_response = ensure_runtime_assets_ready(
+    ensure_runtime_assets_ready(
         model_name=model_name,
         language=language if advanced else None,
         diarize=effective_diarize,
     )
-    if pending_response is not None:
-        return JSONResponse(
-            status_code=202,
-            content=pending_response.model_dump(),
-        ) # type: ignore
 
     filepath = save_upload_file(file)
 
     try:
-        try:
-            if advanced:
-                if should_use_chunked_transcription(filepath):
-                    response = build_chunked_whisperx_response(
-                        filepath=filepath,
-                        model_name=model_name,
-                        language=language,
-                        diarize=effective_diarize,
-                        min_speakers=min_speakers,
-                        max_speakers=max_speakers,
-                    )
-                else:
-                    response = build_whisperx_response(
-                        filepath=filepath,
-                        model_name=model_name,
-                        language=language,
-                        diarize=effective_diarize,
-                        min_speakers=min_speakers,
-                        max_speakers=max_speakers,
-                    )
-            else:
-                response = build_simple_transcription_response(
+        if advanced:
+            if should_use_chunked_transcription(filepath):
+                response = build_chunked_whisperx_response(
                     filepath=filepath,
                     model_name=model_name,
                     language=language,
+                    diarize=effective_diarize,
+                    min_speakers=min_speakers,
+                    max_speakers=max_speakers,
                 )
-        except ModelDownloadPendingError as exc:
-            return JSONResponse(
-                status_code=202,
-                content=exc.response.model_dump(),
-            ) # type: ignore
+            else:
+                response = build_whisperx_response(
+                    filepath=filepath,
+                    model_name=model_name,
+                    language=language,
+                    diarize=effective_diarize,
+                    min_speakers=min_speakers,
+                    max_speakers=max_speakers,
+                )
+        else:
+            response = build_simple_transcription_response(
+                filepath=filepath,
+                model_name=model_name,
+                language=language,
+            )
         return response
     finally:
         cleanup_file(filepath)

@@ -29,6 +29,7 @@ export WHISPERX_AUTO_CHUNK_MIN_MB=100
 export WHISPERX_CHUNK_SECONDS=600
 export WHISPERX_CHUNK_OVERLAP_SECONDS=3
 export WHISPERX_CHUNK_SPEAKER_MERGE_MIN_SIM=0.7
+export HF_HOME=./models/hf-cache
 ```
 
 If you run the service with Docker Compose, create a local `.env` file in the
@@ -87,7 +88,15 @@ Form fields:
 - `max_speakers`: optional integer
 
 If a required WhisperX asset has not been downloaded yet, the service starts a
-background download and returns `202 Accepted`. Retry the same request shortly.
+model loading in the same request. The first request can be slower while model
+assets are prepared.
+
+If another request arrives while the same model is still loading, the service
+waits for the in-flight load and reuses that result instead of starting another
+download/load for the same asset.
+
+When running with Docker Compose, Hugging Face caches are persisted under
+`/app/models/hf-cache` through the existing `/app/models` volume.
 
 ## Automatic Chunked Transcription
 
@@ -128,16 +137,6 @@ Response:
 }
 ```
 
-If the ASR model is still downloading:
-
-```json
-{
-  "status": "model_downloading",
-  "detail": "Requested model assets are downloading. Retry shortly.",
-  "resources": ["asr:turbo"]
-}
-```
-
 ### Advanced mode
 
 If `advanced=true`:
@@ -145,8 +144,8 @@ If `advanced=true`:
 - full WhisperX response is returned
 - if `diarize=true`, speaker diarization is attempted
 - diarization requires `WHISPERX_HF_TOKEN` or `HF_TOKEN`
-- if `language` is omitted, the first successful ASR pass may still return
-  `202 Accepted` while the detected language's alignment model downloads
+- if `language` is omitted, the first request may take longer because the
+  detected language alignment model is loaded before returning
 
 Response:
 

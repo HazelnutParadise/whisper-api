@@ -1,7 +1,7 @@
 import asyncio
-import json
 import os
 import tempfile
+import threading
 import unittest
 from contextlib import ExitStack
 from io import BytesIO
@@ -167,43 +167,40 @@ class TranscriptionsEndpointTests(unittest.TestCase):
     def make_upload(self):
         return UploadFile(filename="sample.wav", file=BytesIO(b"audio"))
 
-    def test_returns_202_when_model_download_starts(self):
-        pending_response = whisper_app.ModelDownloadPendingResponse(
-            status="model_downloading",
-            detail="Requested model assets are downloading. Retry shortly.",
-            resources=["asr:turbo"],
-        )
+    def test_ensure_runtime_asset_singleflight_avoids_duplicate_loads(self):
+        with whisper_app.runtime_asset_lock:
+            whisper_app.runtime_asset_states.clear()
+            whisper_app.runtime_asset_errors.clear()
+            whisper_app.runtime_asset_events.clear()
 
-        with (
-            patch.object(
-                whisper_app,
-                "ensure_runtime_assets_ready",
-                return_value=pending_response,
-                create=True,
-            ),
-            patch.object(
-                whisper_app,
-                "save_upload_file",
-                side_effect=AssertionError("upload should not be persisted yet"),
-                create=True,
-            ),
-        ):
-            response = asyncio.run(
-                whisper_app.transcribe(
-                    file=self.make_upload(),
-                    model_name="whisper-1",
-                    language=None,
-                    advanced=False,
-                    diarize=True,
-                    min_speakers=None,
-                    max_speakers=None,
-                )
+        started = threading.Event()
+        release = threading.Event()
+        load_count = {"value": 0}
+
+        def loader():
+            load_count["value"] += 1
+            started.set()
+            release.wait(timeout=2)
+
+        first = threading.Thread(
+            target=lambda: whisper_app.ensure_runtime_asset(
+                resource="asr:turbo",
+                is_ready=lambda: load_count["value"] > 0,
+                loader=loader,
             )
+        )
+        first.start()
+        self.assertTrue(started.wait(timeout=2))
 
-        self.assertEqual(response.status_code, 202)
-        payload = json.loads(response.body)
-        self.assertEqual(payload["status"], "model_downloading")
-        self.assertEqual(payload["resources"], ["asr:turbo"])
+        whisper_app.ensure_runtime_asset(
+            resource="asr:turbo",
+            is_ready=lambda: load_count["value"] > 0,
+            loader=loader,
+        )
+        release.set()
+        first.join(timeout=2)
+
+        self.assertEqual(load_count["value"], 1)
 
     def test_simple_transcription_uses_legacy_whisper_model_alias(self):
         stack, route_paths = self.build_context({})

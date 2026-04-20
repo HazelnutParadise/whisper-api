@@ -4,6 +4,9 @@ services:
     container_name: whisper-api
     environment:
       WHISPERX_HF_TOKEN: ${WHISPERX_HF_TOKEN}
+      HF_HOME: /app/models/hf-cache
+      HUGGINGFACE_HUB_CACHE: /app/models/hf-cache/hub
+      TRANSFORMERS_CACHE: /app/models/hf-cache/transformers
     deploy:
       resources:
         reservations:
