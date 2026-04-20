@@ -68,4 +68,5 @@ services:
 
 networks:
   speech-net:
-    driver: bridge
+    external: true
+    name: infra-net
