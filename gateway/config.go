@@ -8,7 +8,8 @@ import (
 
 const (
 	DefaultSamplingRate    = 24000
-	DefaultBackendTTSModel = "bosonai/higgs-audio-v2-generation-3B-base"
+	DefaultBackendTTSModel = "eustlb/higgs-audio-v2-generation-3B-base"
+	LegacyBackendTTSModel  = "bosonai/higgs-audio-v2-generation-3B-base"
 )
 
 type Config struct {

@@ -47,6 +47,7 @@ services:
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
       HF_HUB_DISABLE_XET: ${HF_HUB_DISABLE_XET:-1}
+      HIGGS_AUDIO_MODEL: ${HIGGS_AUDIO_MODEL:-eustlb/higgs-audio-v2-generation-3B-base}
       CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
     gpus: all
     volumes:

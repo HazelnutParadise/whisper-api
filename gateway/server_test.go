@@ -36,6 +36,7 @@ func TestModelsEndpointReturnsCombinedASRAndTTSModels(t *testing.T) {
 		"turbo":     false,
 		"tts-1":     false,
 		"tts-1-hd":  false,
+		"eustlb/higgs-audio-v2-generation-3B-base":  false,
 		"bosonai/higgs-audio-v2-generation-3B-base": false,
 	}
 	for _, model := range payload.Data {
@@ -139,6 +140,38 @@ func TestSpeechEndpointMapsOpenAIAliasToHiggsBackendModel(t *testing.T) {
 	}
 	if body := rec.Body.Bytes(); string(body) != string([]byte{0x00, 0x01, 0x02, 0x03}) {
 		t.Fatalf("unexpected audio body: %v", body)
+	}
+}
+
+func TestSpeechEndpointMapsLegacyBosonModelToCurrentBackendModel(t *testing.T) {
+	tts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("expected valid json body: %v", err)
+		}
+		if got := payload["model"]; got != DefaultBackendTTSModel {
+			t.Fatalf("expected model %q, got %v", DefaultBackendTTSModel, got)
+		}
+
+		w.Header().Set("Content-Type", "audio/pcm")
+		_, _ = w.Write([]byte{0x00, 0x01})
+	}))
+	defer tts.Close()
+
+	app := NewApp(Config{TTSBaseURL: tts.URL})
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/audio/speech",
+		strings.NewReader(`{"model":"bosonai/higgs-audio-v2-generation-3B-base","input":"hello","voice":"alloy","response_format":"pcm"}`),
+	)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	app.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d with body %s", rec.Code, rec.Body.String())
 	}
 }
 

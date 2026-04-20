@@ -28,6 +28,7 @@ Returns a combined model list for ASR and TTS:
 - `turbo`
 - `tts-1`
 - `tts-1-hd`
+- `eustlb/higgs-audio-v2-generation-3B-base`
 - `bosonai/higgs-audio-v2-generation-3B-base`
 
 ### `POST /v1/audio/transcriptions`
@@ -84,6 +85,11 @@ This avoids the tokenizer, config, and loader incompatibilities we observed in
 `bosonai/higgs-audio-vllm:latest`, while keeping the public API surface
 OpenAI-compatible through the Go gateway.
 
+For the native Transformers path, the current Hugging Face docs use
+`eustlb/higgs-audio-v2-generation-3B-base` in all supported examples, so this
+repo now uses that as the default backend model while still accepting the older
+`bosonai/higgs-audio-v2-generation-3B-base` alias at the API layer.
+
 Higgs Audio is multilingual, but it should not be treated as "all languages
 supported." The strongest evidence currently points to English, Chinese
 (primarily Mandarin), Korean, German, and Spanish. Other languages should be
@@ -131,6 +137,7 @@ HF_HUB_DISABLE_XET=1
 CUDA_VISIBLE_DEVICES=0
 ASR_MODELS_PATH=/mnt/ssd1/whisper/models
 HIGGS_CACHE_PATH=/mnt/ssd1/whisper/higgs-cache
+HIGGS_AUDIO_MODEL=eustlb/higgs-audio-v2-generation-3B-base
 ```
 
 Start all three services:

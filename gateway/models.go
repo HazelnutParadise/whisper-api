@@ -55,12 +55,20 @@ func supportedModels(now time.Time) []ModelInfo {
 			Created:    created,
 			Root:       DefaultBackendTTSModel,
 		},
+		{
+			ID:         LegacyBackendTTSModel,
+			Object:     "model",
+			OwnedBy:    "openai-compatible",
+			Permission: []any{},
+			Created:    created,
+			Root:       DefaultBackendTTSModel,
+		},
 	}
 }
 
 func mapSpeechModel(model string) string {
 	switch model {
-	case "", "tts-1", "tts-1-hd":
+	case "", "tts-1", "tts-1-hd", LegacyBackendTTSModel:
 		return DefaultBackendTTSModel
 	default:
 		return model

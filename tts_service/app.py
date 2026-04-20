@@ -14,7 +14,8 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 
-DEFAULT_BACKEND_TTS_MODEL = "bosonai/higgs-audio-v2-generation-3B-base"
+DEFAULT_BACKEND_TTS_MODEL = "eustlb/higgs-audio-v2-generation-3B-base"
+LEGACY_BACKEND_TTS_MODEL = "bosonai/higgs-audio-v2-generation-3B-base"
 DEFAULT_SAMPLING_RATE = 24_000
 DEFAULT_MAX_NEW_TOKENS = 1_024
 DEFAULT_TEMPERATURE = 0.3
@@ -88,6 +89,7 @@ SUPPORTED_TTS_MODELS = {
     "tts-1",
     "tts-1-hd",
     DEFAULT_BACKEND_TTS_MODEL,
+    LEGACY_BACKEND_TTS_MODEL,
 }
 
 _ENGINE = None
