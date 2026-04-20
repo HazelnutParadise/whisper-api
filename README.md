@@ -130,8 +130,13 @@ HIGGS_CACHE_PATH=/mnt/ssd1/whisper/higgs-cache
 Start all three services:
 
 ```bash
+docker network create infra-net
 docker compose up --build
 ```
+
+The Higgs vLLM backend must bind to `0.0.0.0` inside its container. This repo's
+compose file now sets that explicitly and waits for the backend `/health`
+endpoint before starting the public gateway.
 
 Public gateway endpoint:
 
@@ -192,3 +197,32 @@ Go gateway tests:
 ```bash
 go test ./gateway/...
 ```
+
+## TTS Troubleshooting
+
+If `POST /v1/audio/speech` returns:
+
+```text
+502 Bad Gateway
+TTS backend request failed: ... connect: connection refused
+```
+
+that usually means the `higgs-tts` container is not listening yet, not that the
+OpenAI-compatible route shape is wrong.
+
+Check:
+
+```bash
+docker compose ps
+docker compose logs higgs-tts
+```
+
+Common causes:
+
+- the vLLM server bound only to loopback instead of `0.0.0.0`
+- the model is still downloading or loading into GPU memory
+- the container exited before port `8000` became ready
+
+The Higgs Audio model and tokenizer pages are public on Hugging Face, so this
+failure is usually not caused by gated-model approval. Still, setting `HF_TOKEN`
+is recommended for reliable Hub downloads and rate limiting.

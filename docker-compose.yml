@@ -10,8 +10,10 @@ services:
     ports:
       - "5148:5000"
     depends_on:
-      - asr
-      - higgs-tts
+      asr:
+        condition: service_started
+      higgs-tts:
+        condition: service_healthy
     networks:
       - speech-net
     restart: unless-stopped
@@ -40,6 +42,8 @@ services:
     image: bosonai/higgs-audio-vllm:latest
     container_name: whisper-higgs-tts
     command:
+      - --host
+      - 0.0.0.0
       - --served-model-name
       - bosonai/higgs-audio-v2-generation-3B-base
       - --model
@@ -62,6 +66,16 @@ services:
     gpus: all
     volumes:
       - ${HIGGS_CACHE_PATH:-/mnt/ssd1/whisper/higgs-cache}:/root/.cache/huggingface
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=3).read()
+      interval: 15s
+      timeout: 5s
+      retries: 60
+      start_period: 5m
     networks:
       - speech-net
     restart: unless-stopped
