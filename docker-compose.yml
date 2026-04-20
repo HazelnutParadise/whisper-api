@@ -31,7 +31,7 @@ services:
       CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
     gpus: all
     volumes:
-      - asr-models:/app/models
+      - ${ASR_MODELS_PATH:-/mnt/ssd1/whisper/models}:/app/models
     networks:
       - speech-net
     restart: unless-stopped
@@ -61,7 +61,7 @@ services:
       CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
     gpus: all
     volumes:
-      - higgs-cache:/root/.cache/huggingface
+      - ${HIGGS_CACHE_PATH:-/mnt/ssd1/whisper/higgs-cache}:/root/.cache/huggingface
     networks:
       - speech-net
     restart: unless-stopped
@@ -69,7 +69,3 @@ services:
 networks:
   speech-net:
     driver: bridge
-
-volumes:
-  asr-models:
-  higgs-cache:

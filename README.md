@@ -123,6 +123,8 @@ Create `.env` from `.env.example` and set at least:
 ```bash
 HF_TOKEN=hf_xxx
 CUDA_VISIBLE_DEVICES=0
+ASR_MODELS_PATH=/mnt/ssd1/whisper/models
+HIGGS_CACHE_PATH=/mnt/ssd1/whisper/higgs-cache
 ```
 
 Start all three services:
