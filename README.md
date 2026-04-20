@@ -15,7 +15,7 @@ internal Docker network.
 client
   -> gateway (Go, port 5000)
        -> asr (FastAPI, WhisperX)
-       -> higgs-tts (native HiggsAudioServeEngine)
+       -> higgs-tts (native Transformers Higgs Audio V2)
 ```
 
 ## Endpoints
@@ -76,10 +76,11 @@ direct Higgs prompt names such as `belinda`, `en_woman`, `en_man`,
 
 ## Higgs Audio Notes
 
-The compose file builds a native Python Higgs service from the upstream repo and
-uses `HiggsAudioServeEngine` directly instead of the published vLLM image.
+The compose file builds a native Python Higgs service around the Transformers
+`AutoProcessor` + `HiggsAudioV2ForConditionalGeneration` path instead of the
+published vLLM image or the older `boson_multimodal` wrapper.
 
-This avoids the tokenizer and template incompatibilities we observed in
+This avoids the tokenizer, config, and loader incompatibilities we observed in
 `bosonai/higgs-audio-vllm:latest`, while keeping the public API surface
 OpenAI-compatible through the Go gateway.
 
