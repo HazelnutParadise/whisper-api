@@ -2,6 +2,7 @@ import importlib
 import logging
 import os
 import shutil
+import subprocess
 import threading
 import uuid
 from contextlib import asynccontextmanager
@@ -21,6 +22,14 @@ UPLOAD_FOLDER = "./whisper_service"
 MODELS_DOWNLOAD_ROOT = "./models"
 
 WHISPERX_BATCH_SIZE = int(os.getenv("WHISPERX_BATCH_SIZE", "16"))
+WHISPERX_CHUNK_SECONDS = int(os.getenv("WHISPERX_CHUNK_SECONDS", "600"))
+WHISPERX_CHUNK_OVERLAP_SECONDS = float(
+    os.getenv("WHISPERX_CHUNK_OVERLAP_SECONDS", "3")
+)
+WHISPERX_AUTO_CHUNK_MIN_MB = float(os.getenv("WHISPERX_AUTO_CHUNK_MIN_MB", "100"))
+WHISPERX_CHUNK_SPEAKER_MERGE_MIN_SIM = float(
+    os.getenv("WHISPERX_CHUNK_SPEAKER_MERGE_MIN_SIM", "0.7")
+)
 SUPPORTED_TRANSCRIPTION_MODELS = {
     "whisper-1": "turbo",
     "turbo": "turbo",
@@ -541,6 +550,379 @@ def build_whisperx_response(
     )
 
 
+def should_use_chunked_transcription(filepath: str) -> bool:
+    """Return whether the upload should use chunked transcription."""
+    if WHISPERX_AUTO_CHUNK_MIN_MB <= 0:
+        return False
+
+    threshold_bytes = int(WHISPERX_AUTO_CHUNK_MIN_MB * 1024 * 1024)
+    try:
+        return os.path.getsize(filepath) >= threshold_bytes
+    except OSError:
+        return False
+
+
+def get_audio_duration_seconds(filepath: str) -> float:
+    """Read audio duration in seconds with ffprobe."""
+    result = subprocess.run(
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            filepath,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to inspect audio duration with ffprobe.",
+        )
+
+    output = result.stdout.strip()
+    if not output:
+        raise HTTPException(
+            status_code=500,
+            detail="Audio duration is unavailable.",
+        )
+
+    try:
+        duration = float(output)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Audio duration returned by ffprobe is invalid.",
+        ) from exc
+
+    return max(duration, 0.0)
+
+
+def generate_chunk_specs(duration_seconds: float) -> list[dict[str, float | int]]:
+    """Create chunk metadata for ffmpeg slicing and merge offsets."""
+    if duration_seconds <= 0:
+        return [{"index": 0, "nominal_start": 0.0, "extract_start": 0.0, "extract_duration": 0.0}]
+
+    chunk_seconds = max(1, WHISPERX_CHUNK_SECONDS)
+    overlap = max(0.0, WHISPERX_CHUNK_OVERLAP_SECONDS)
+
+    specs: list[dict[str, float | int]] = []
+    index = 0
+    nominal_start = 0.0
+    while nominal_start < duration_seconds:
+        extract_start = max(0.0, nominal_start - overlap)
+        extract_duration = min(chunk_seconds + (overlap if index > 0 else 0.0), duration_seconds - extract_start)
+        specs.append(
+            {
+                "index": index,
+                "nominal_start": nominal_start,
+                "extract_start": extract_start,
+                "extract_duration": extract_duration,
+            }
+        )
+        index += 1
+        nominal_start += chunk_seconds
+
+    return specs
+
+
+def extract_audio_chunk(filepath: str, spec: dict[str, float | int]) -> str:
+    """Extract one chunk from the original audio file."""
+    chunk_path = os.path.join(
+        UPLOAD_FOLDER,
+        f"{uuid.uuid4().hex}_chunk_{int(spec['index'])}.wav",
+    )
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-ss",
+            f"{float(spec['extract_start']):.3f}",
+            "-i",
+            filepath,
+            "-t",
+            f"{float(spec['extract_duration']):.3f}",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            chunk_path,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        cleanup_file(chunk_path)
+        raise HTTPException(status_code=500, detail="Failed to split audio into chunks.")
+    return chunk_path
+
+
+def _overlap_duration(start_a: float, end_a: float, start_b: float, end_b: float) -> float:
+    """Return overlap duration of two time ranges."""
+    return max(0.0, min(end_a, end_b) - max(start_a, start_b))
+
+
+def build_chunk_speaker_mapping(
+    *,
+    previous_segments: list[SegmentTimestamp],
+    current_segments: list[SegmentTimestamp],
+    boundary_start: float,
+    overlap_seconds: float,
+    known_speakers: list[str],
+    min_similarity: float,
+) -> dict[str, str]:
+    """Map current chunk speaker labels to global labels using boundary overlap."""
+    window_start = max(0.0, boundary_start - overlap_seconds)
+    window_end = boundary_start
+    min_similarity = max(0.0, min(min_similarity, 1.0))
+
+    curr_coverage: dict[str, float] = {}
+    prev_coverage: dict[str, float] = {}
+
+    for curr in current_segments:
+        if not curr.speaker or curr.start is None or curr.end is None:
+            continue
+        curr_start = max(curr.start, window_start)
+        curr_end = min(curr.end, window_end)
+        if curr_end <= curr_start:
+            continue
+        curr_coverage[curr.speaker] = curr_coverage.get(curr.speaker, 0.0) + (
+            curr_end - curr_start
+        )
+
+    # Build similarity by temporal intersection inside overlap window.
+    pair_scores: dict[tuple[str, str], float] = {}
+    for prev in previous_segments:
+        if not prev.speaker or prev.start is None or prev.end is None:
+            continue
+        prev_start = max(prev.start, window_start)
+        prev_end = min(prev.end, window_end)
+        if prev_end <= prev_start:
+            continue
+        prev_coverage[prev.speaker] = prev_coverage.get(prev.speaker, 0.0) + (
+            prev_end - prev_start
+        )
+
+        for curr in current_segments:
+            if not curr.speaker or curr.start is None or curr.end is None:
+                continue
+            curr_start = max(curr.start, window_start)
+            curr_end = min(curr.end, window_end)
+            if curr_end <= curr_start:
+                continue
+
+            score = _overlap_duration(prev_start, prev_end, curr_start, curr_end)
+            if score <= 0:
+                continue
+            key = (curr.speaker, prev.speaker)
+            pair_scores[key] = pair_scores.get(key, 0.0) + score
+
+    pair_similarity: dict[tuple[str, str], float] = {}
+    for (curr_label, prev_label), overlap in pair_scores.items():
+        curr_total = curr_coverage.get(curr_label, 0.0)
+        prev_total = prev_coverage.get(prev_label, 0.0)
+        if curr_total <= 0 or prev_total <= 0:
+            continue
+        pair_similarity[(curr_label, prev_label)] = overlap / max(curr_total, prev_total)
+
+    mapping: dict[str, str] = {}
+    used_global: set[str] = set()
+    for (curr_label, prev_label), similarity in sorted(
+        pair_similarity.items(), key=lambda item: item[1], reverse=True
+    ):
+        if curr_label in mapping or prev_label in used_global:
+            continue
+        if similarity < min_similarity:
+            continue
+        mapping[curr_label] = prev_label
+        used_global.add(prev_label)
+
+    existing = sorted({speaker for speaker in known_speakers if speaker})
+    next_idx = 0
+    while f"SPEAKER_{next_idx:02d}" in existing:
+        next_idx += 1
+
+    for segment in current_segments:
+        curr_label = segment.speaker
+        if not curr_label or curr_label in mapping:
+            continue
+        global_label = f"SPEAKER_{next_idx:02d}"
+        mapping[curr_label] = global_label
+        existing.append(global_label)
+        next_idx += 1
+
+    return mapping
+
+
+def apply_speaker_mapping_to_segments(
+    segments: list[SegmentTimestamp], mapping: dict[str, str]
+) -> None:
+    """Rewrite segment and word speaker labels in place."""
+    for segment in segments:
+        if segment.speaker in mapping:
+            segment.speaker = mapping[segment.speaker]
+        if not segment.words:
+            continue
+        for word in segment.words:
+            if word.speaker in mapping:
+                word.speaker = mapping[word.speaker]
+
+
+def apply_speaker_mapping_to_diarization(
+    diarization: list[DiarizationSegment], mapping: dict[str, str]
+) -> None:
+    """Rewrite diarization speaker labels in place."""
+    for diarization_segment in diarization:
+        if diarization_segment.speaker in mapping:
+            diarization_segment.speaker = mapping[diarization_segment.speaker]
+
+
+def shift_advanced_response_timestamps(
+    payload: TranscriptionAdvancedResponse,
+    *,
+    offset_seconds: float,
+) -> None:
+    """Shift all response timestamps by offset."""
+    for segment in payload.segments:
+        if segment.start is not None:
+            segment.start += offset_seconds
+        if segment.end is not None:
+            segment.end += offset_seconds
+        if not segment.words:
+            continue
+        for word in segment.words:
+            if word.start is not None:
+                word.start += offset_seconds
+            if word.end is not None:
+                word.end += offset_seconds
+
+    for diarization_segment in payload.diarization:
+        if diarization_segment.start is not None:
+            diarization_segment.start += offset_seconds
+        if diarization_segment.end is not None:
+            diarization_segment.end += offset_seconds
+
+
+def filter_chunk_overlap_prefix(
+    payload: TranscriptionAdvancedResponse,
+    *,
+    chunk_nominal_start: float,
+) -> None:
+    """Drop overlapped prefix content from a chunk to reduce duplicates."""
+    if chunk_nominal_start <= 0:
+        return
+
+    payload.segments = [
+        segment
+        for segment in payload.segments
+        if segment.end is None or segment.end > chunk_nominal_start
+    ]
+    payload.diarization = [
+        segment
+        for segment in payload.diarization
+        if segment.end is None or segment.end > chunk_nominal_start
+    ]
+
+
+def build_chunked_whisperx_response(
+    *,
+    filepath: str,
+    model_name: str,
+    language: str | None,
+    diarize: bool,
+    min_speakers: int | None,
+    max_speakers: int | None,
+) -> TranscriptionAdvancedResponse:
+    """Run chunked transcription and merge timestamps and speakers globally."""
+    duration_seconds = get_audio_duration_seconds(filepath)
+    chunk_specs = generate_chunk_specs(duration_seconds)
+    if len(chunk_specs) <= 1:
+        return build_whisperx_response(
+            filepath=filepath,
+            model_name=model_name,
+            language=language,
+            diarize=diarize,
+            min_speakers=min_speakers,
+            max_speakers=max_speakers,
+        )
+
+    merged_segments: list[SegmentTimestamp] = []
+    merged_diarization: list[DiarizationSegment] = []
+    merged_language: str | None = language
+    known_speakers: list[str] = []
+    chunk_paths: list[str] = []
+
+    try:
+        for spec in chunk_specs:
+            chunk_path = extract_audio_chunk(filepath, spec)
+            chunk_paths.append(chunk_path)
+
+            chunk_result = build_whisperx_response(
+                filepath=chunk_path,
+                model_name=model_name,
+                language=language,
+                diarize=diarize,
+                min_speakers=min_speakers,
+                max_speakers=max_speakers,
+            )
+
+            shift_advanced_response_timestamps(
+                chunk_result,
+                offset_seconds=float(spec["extract_start"]),
+            )
+            filter_chunk_overlap_prefix(
+                chunk_result,
+                chunk_nominal_start=float(spec["nominal_start"]),
+            )
+
+            if diarize:
+                mapping = build_chunk_speaker_mapping(
+                    previous_segments=merged_segments,
+                    current_segments=chunk_result.segments,
+                    boundary_start=float(spec["nominal_start"]),
+                    overlap_seconds=max(0.0, WHISPERX_CHUNK_OVERLAP_SECONDS),
+                    known_speakers=known_speakers,
+                    min_similarity=WHISPERX_CHUNK_SPEAKER_MERGE_MIN_SIM,
+                )
+                apply_speaker_mapping_to_segments(chunk_result.segments, mapping)
+                apply_speaker_mapping_to_diarization(chunk_result.diarization, mapping)
+
+            merged_segments.extend(chunk_result.segments)
+            merged_diarization.extend(chunk_result.diarization)
+            if not merged_language:
+                merged_language = chunk_result.language
+
+            for speaker in chunk_result.speakers:
+                if speaker and speaker not in known_speakers:
+                    known_speakers.append(speaker)
+
+        speakers = sorted(
+            {
+                speaker
+                for speaker in (segment.speaker for segment in merged_segments)
+                if speaker
+            }
+        )
+        return TranscriptionAdvancedResponse(
+            text=build_whisperx_text(merged_segments),
+            language=merged_language or "unknown",
+            segments=merged_segments,
+            diarization=merged_diarization,
+            speakers=speakers,
+        )
+    finally:
+        for chunk_path in chunk_paths:
+            cleanup_file(chunk_path)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     del app
@@ -685,14 +1067,24 @@ async def transcribe(
     try:
         try:
             if advanced:
-                response = build_whisperx_response(
-                    filepath=filepath,
-                    model_name=model_name,
-                    language=language,
-                    diarize=effective_diarize,
-                    min_speakers=min_speakers,
-                    max_speakers=max_speakers,
-                )
+                if should_use_chunked_transcription(filepath):
+                    response = build_chunked_whisperx_response(
+                        filepath=filepath,
+                        model_name=model_name,
+                        language=language,
+                        diarize=effective_diarize,
+                        min_speakers=min_speakers,
+                        max_speakers=max_speakers,
+                    )
+                else:
+                    response = build_whisperx_response(
+                        filepath=filepath,
+                        model_name=model_name,
+                        language=language,
+                        diarize=effective_diarize,
+                        min_speakers=min_speakers,
+                        max_speakers=max_speakers,
+                    )
             else:
                 response = build_simple_transcription_response(
                     filepath=filepath,

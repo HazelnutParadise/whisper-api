@@ -25,6 +25,10 @@ export WHISPERX_HF_TOKEN=hf_xxx
 export WHISPERX_DEVICE=cuda
 export WHISPERX_COMPUTE_TYPE=float16
 export WHISPERX_BATCH_SIZE=16
+export WHISPERX_AUTO_CHUNK_MIN_MB=100
+export WHISPERX_CHUNK_SECONDS=600
+export WHISPERX_CHUNK_OVERLAP_SECONDS=3
+export WHISPERX_CHUNK_SPEAKER_MERGE_MIN_SIM=0.7
 ```
 
 If you run the service with Docker Compose, create a local `.env` file in the
@@ -84,6 +88,27 @@ Form fields:
 
 If a required WhisperX asset has not been downloaded yet, the service starts a
 background download and returns `202 Accepted`. Retry the same request shortly.
+
+## Automatic Chunked Transcription
+
+For large uploads, the service can automatically split audio into chunks,
+transcribe each chunk, and merge results.
+
+- `WHISPERX_AUTO_CHUNK_MIN_MB`: file-size threshold in MB for auto chunking
+  - default: `100`
+  - set `0` or negative to disable auto chunking
+- `WHISPERX_CHUNK_SECONDS`: chunk length in seconds
+  - default: `600`
+- `WHISPERX_CHUNK_OVERLAP_SECONDS`: overlap window in seconds
+  - default: `3`
+- `WHISPERX_CHUNK_SPEAKER_MERGE_MIN_SIM`: minimum similarity needed to merge
+  chunk-local speaker labels into existing global speakers
+  - range: `0` to `1`
+  - default: `0.7`
+
+When `advanced=true` and chunking is used, speaker labels are reconciled across
+chunk boundaries so segment-local labels are normalized to global speaker IDs.
+Non-chunked requests keep the original single-pass behavior.
 
 ## Behavior
 

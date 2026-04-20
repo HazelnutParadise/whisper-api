@@ -311,6 +311,125 @@ class TranscriptionsEndpointTests(unittest.TestCase):
             "SPEAKER_00",
         )
 
+    def test_chunk_speaker_mapping_aligns_local_ids_to_previous_chunk(self):
+        previous_segments = [
+            whisper_app.SegmentTimestamp(
+                id=0,
+                start=57.0,
+                end=60.0,
+                text="previous",
+                speaker="SPEAKER_00",
+                words=None,
+            )
+        ]
+        current_segments = [
+            whisper_app.SegmentTimestamp(
+                id=0,
+                start=58.0,
+                end=61.0,
+                text="current",
+                speaker="SPEAKER_01",
+                words=[
+                    whisper_app.WordTimestamp(
+                        word="current",
+                        start=58.2,
+                        end=58.8,
+                        speaker="SPEAKER_01",
+                    )
+                ],
+            )
+        ]
+
+        mapping = whisper_app.build_chunk_speaker_mapping(
+            previous_segments=previous_segments,
+            current_segments=current_segments,
+            boundary_start=60.0,
+            overlap_seconds=3.0,
+            known_speakers=["SPEAKER_00"],
+            min_similarity=0.1,
+        )
+        whisper_app.apply_speaker_mapping_to_segments(current_segments, mapping)
+
+        self.assertEqual(mapping["SPEAKER_01"], "SPEAKER_00")
+        self.assertEqual(current_segments[0].speaker, "SPEAKER_00")
+        self.assertEqual(current_segments[0].words[0].speaker, "SPEAKER_00")
+
+    def test_chunk_speaker_mapping_respects_min_similarity_threshold(self):
+        previous_segments = [
+            whisper_app.SegmentTimestamp(
+                id=0,
+                start=57.0,
+                end=60.0,
+                text="previous",
+                speaker="SPEAKER_00",
+                words=None,
+            )
+        ]
+        current_segments = [
+            whisper_app.SegmentTimestamp(
+                id=0,
+                start=59.8,
+                end=61.0,
+                text="current",
+                speaker="SPEAKER_99",
+                words=None,
+            )
+        ]
+
+        mapping = whisper_app.build_chunk_speaker_mapping(
+            previous_segments=previous_segments,
+            current_segments=current_segments,
+            boundary_start=60.0,
+            overlap_seconds=3.0,
+            known_speakers=["SPEAKER_00"],
+            min_similarity=0.95,
+        )
+
+        self.assertEqual(mapping["SPEAKER_99"], "SPEAKER_01")
+
+    def test_advanced_transcription_uses_chunked_pipeline_only_when_enabled(self):
+        stack, _ = self.build_context({"WHISPERX_HF_TOKEN": "hf-test-token"})
+        chunked_payload = whisper_app.TranscriptionAdvancedResponse(
+            text="chunked",
+            language="en",
+            segments=[],
+            diarization=[],
+            speakers=[],
+        )
+
+        with stack:
+            with (
+                patch.object(
+                    whisper_app,
+                    "should_use_chunked_transcription",
+                    return_value=True,
+                ),
+                patch.object(
+                    whisper_app,
+                    "build_chunked_whisperx_response",
+                    return_value=chunked_payload,
+                ) as build_chunked,
+                patch.object(
+                    whisper_app,
+                    "build_whisperx_response",
+                    side_effect=AssertionError("non-chunked path should not run"),
+                ),
+            ):
+                payload = asyncio.run(
+                    whisper_app.transcribe(
+                        file=self.make_upload(),
+                        model_name="whisper-1",
+                        language=None,
+                        advanced=True,
+                        diarize=True,
+                        min_speakers=None,
+                        max_speakers=None,
+                    )
+                )
+
+        self.assertEqual(payload.model_dump()["text"], "chunked")
+        self.assertEqual(build_chunked.call_count, 1)
+
     def test_advanced_transcription_requires_token_for_diarization(self):
         stack, route_paths = self.build_context({})
         with stack:
