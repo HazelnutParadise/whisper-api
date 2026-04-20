@@ -7,10 +7,10 @@ from fastapi.testclient import TestClient
 
 import tts_service.app as tts_app
 from tts_service.app import (
-    DEFAULT_BACKEND_TTS_MODEL,
     DEFAULT_SAMPLING_RATE,
     EngineBundle,
     OPENAI_VOICE_ALIASES,
+    PUBLIC_BACKEND_TTS_MODEL,
     app,
 )
 
@@ -74,7 +74,7 @@ class TTSServiceTests(unittest.TestCase):
                 response = client.post(
                     "/v1/audio/speech",
                     json={
-                        "model": DEFAULT_BACKEND_TTS_MODEL,
+                        "model": PUBLIC_BACKEND_TTS_MODEL,
                         "input": "hello world",
                         "voice": "alloy",
                         "response_format": "pcm",
@@ -94,7 +94,7 @@ class TTSServiceTests(unittest.TestCase):
                 response = client.post(
                     "/v1/audio/speech",
                     json={
-                        "model": DEFAULT_BACKEND_TTS_MODEL,
+                        "model": PUBLIC_BACKEND_TTS_MODEL,
                         "input": "hello world",
                         "voice": "not-a-real-voice",
                         "response_format": "pcm",
@@ -103,6 +103,22 @@ class TTSServiceTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("voice", response.json()["detail"])
+
+    def test_speech_endpoint_rejects_upstream_repo_model_ids(self):
+        with patch("tts_service.app.preload_engine_async", autospec=True):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/v1/audio/speech",
+                    json={
+                        "model": "bosonai/higgs-audio-v2-generation-3B-base",
+                        "input": "hello world",
+                        "voice": "alloy",
+                        "response_format": "pcm",
+                    },
+                )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn(PUBLIC_BACKEND_TTS_MODEL, response.json()["detail"])
 
     def test_healthz_returns_503_while_engine_is_loading(self):
         with (

@@ -140,6 +140,16 @@ func (a *App) handleSpeech(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, http.StatusBadRequest, errorResponse{Detail: "model, input, and voice are required."})
 		return
 	}
+	if !isSupportedSpeechModel(payload.Model) {
+		a.writeJSON(
+			w,
+			http.StatusBadRequest,
+			errorResponse{
+				Detail: "model must be one of tts-1, tts-1-hd, higgs-audio-v2-generation-3b.",
+			},
+		)
+		return
+	}
 
 	if payload.ResponseFormat == "" {
 		payload.ResponseFormat = "mp3"
@@ -264,6 +274,15 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) {
 func isSupportedResponseFormat(format string) bool {
 	switch format {
 	case "mp3", "opus", "aac", "flac", "wav", "pcm":
+		return true
+	default:
+		return false
+	}
+}
+
+func isSupportedSpeechModel(model string) bool {
+	switch model {
+	case "tts-1", "tts-1-hd", PublicBackendTTSModel:
 		return true
 	default:
 		return false

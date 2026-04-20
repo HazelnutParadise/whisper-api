@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 
 DEFAULT_BACKEND_TTS_MODEL = "eustlb/higgs-audio-v2-generation-3B-base"
-LEGACY_BACKEND_TTS_MODEL = "bosonai/higgs-audio-v2-generation-3B-base"
+PUBLIC_BACKEND_TTS_MODEL = "higgs-audio-v2-generation-3b"
 DEFAULT_SAMPLING_RATE = 24_000
 DEFAULT_MAX_NEW_TOKENS = 1_024
 DEFAULT_TEMPERATURE = 0.3
@@ -88,8 +88,7 @@ SUPPORTED_TTS_MODELS = {
     "",
     "tts-1",
     "tts-1-hd",
-    DEFAULT_BACKEND_TTS_MODEL,
-    LEGACY_BACKEND_TTS_MODEL,
+    PUBLIC_BACKEND_TTS_MODEL,
 }
 
 _ENGINE = None
@@ -111,7 +110,7 @@ class EngineBundle:
 class SpeechRequest(BaseModel):
     """OpenAI-style speech request accepted by the native TTS backend."""
 
-    model: str = Field(default=DEFAULT_BACKEND_TTS_MODEL)
+    model: str = Field(default=PUBLIC_BACKEND_TTS_MODEL)
     input: str
     voice: str
     instructions: str | None = None
@@ -378,7 +377,7 @@ def create_speech(payload: SpeechRequest):
             detail=(
                 "model must be one of "
                 "`tts-1`, `tts-1-hd`, or "
-                f"`{DEFAULT_BACKEND_TTS_MODEL}`."
+                f"`{PUBLIC_BACKEND_TTS_MODEL}`."
             ),
         )
     if not payload.input.strip():

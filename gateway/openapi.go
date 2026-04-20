@@ -47,7 +47,10 @@ func buildOpenAPISpec() map[string]any {
 									"type":     "object",
 									"required": []string{"model", "input", "voice"},
 									"properties": map[string]any{
-										"model":        map[string]any{"type": "string"},
+										"model": map[string]any{
+											"type": "string",
+											"enum": []string{"tts-1", "tts-1-hd", PublicBackendTTSModel},
+										},
 										"input":        map[string]any{"type": "string"},
 										"voice":        map[string]any{"type": "string"},
 										"instructions": map[string]any{"type": "string"},
