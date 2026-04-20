@@ -4,7 +4,7 @@ An OpenAI-compatible speech stack with three services:
 
 - `gateway`: Go entrypoint for `/v1/models`, `/v1/audio/transcriptions`, `/v1/audio/speech`, `/openapi.json`, `/docs`, and `/redoc`
 - `asr`: FastAPI + WhisperX backend for transcription
-- `higgs-tts`: Higgs Audio vLLM backend for TTS with CUDA
+- `higgs-tts`: native Python Higgs Audio backend for TTS with CUDA
 
 Only the Go gateway is exposed publicly. The ASR and TTS services stay on the
 internal Docker network.
@@ -15,7 +15,7 @@ internal Docker network.
 client
   -> gateway (Go, port 5000)
        -> asr (FastAPI, WhisperX)
-       -> higgs-tts (bosonai/higgs-audio-vllm)
+       -> higgs-tts (native HiggsAudioServeEngine)
 ```
 
 ## Endpoints
@@ -69,15 +69,19 @@ Supported `response_format` values:
 
 `stream_format` currently supports only `audio`. `sse` is rejected with `400`.
 
+The native TTS backend accepts OpenAI voice aliases such as `alloy`, `ash`,
+and `shimmer`, and maps them onto bundled Higgs prompt voices. It also accepts
+direct Higgs prompt names such as `belinda`, `en_woman`, `en_man`,
+`broom_salesman`, `mabel`, and `chadwick`.
+
 ## Higgs Audio Notes
 
-The compose file currently uses the official Higgs vLLM image:
+The compose file builds a native Python Higgs service from the upstream repo and
+uses `HiggsAudioServeEngine` directly instead of the published vLLM image.
 
-- `bosonai/higgs-audio-vllm:latest`
-
-This image is referenced in the upstream repo's vLLM example:
-
-- https://github.com/boson-ai/higgs-audio/tree/main/examples/vllm
+This avoids the tokenizer and template incompatibilities we observed in
+`bosonai/higgs-audio-vllm:latest`, while keeping the public API surface
+OpenAI-compatible through the Go gateway.
 
 Higgs Audio is multilingual, but it should not be treated as "all languages
 supported." The strongest evidence currently points to English, Chinese
@@ -90,7 +94,7 @@ This repo follows a latest-first policy:
 
 - prefer current stable Go for the gateway
 - prefer current compatible Python packages for the ASR service
-- use the current upstream Higgs vLLM image first
+- use the current upstream native Higgs Python engine first
 - only pin or roll back further when build or runtime verification fails
 
 The local verified Python test environment in this repo is currently the
@@ -123,8 +127,6 @@ Create `.env` from `.env.example` and set at least:
 ```bash
 HF_TOKEN=hf_xxx
 HF_HUB_DISABLE_XET=1
-HIGGS_AUDIO_TOKENIZER_REPO=bosonai/higgs-audio-v2-tokenizer
-HIGGS_AUDIO_TOKENIZER_PATH=/opt/higgs-audio-v2-tokenizer
 CUDA_VISIBLE_DEVICES=0
 ASR_MODELS_PATH=/mnt/ssd1/whisper/models
 HIGGS_CACHE_PATH=/mnt/ssd1/whisper/higgs-cache
@@ -137,17 +139,8 @@ docker network create infra-net
 docker compose up --build
 ```
 
-The Higgs vLLM backend must bind to `0.0.0.0` inside its container. This repo's
-compose file now sets that explicitly and waits for the backend `/health`
+The native Higgs backend exposes `/healthz`, and compose waits for that
 endpoint before starting the public gateway.
-
-For the Higgs tokenizer, this repo mounts a local tokenizer directory into the
-container and passes it through `--audio-tokenizer-path`. That avoids two
-upstream incompatibilities at once:
-
-- the public Boson tokenizer repo currently exposes a minimal `config.json`
-- the Transformers-compatible tokenizer repo does not provide the legacy
-  `model.pth` filename expected by this vLLM Boson loader
 
 Public gateway endpoint:
 
@@ -188,7 +181,7 @@ curl -X POST "http://localhost:5148/v1/audio/speech" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "tts-1",
-    "voice": "en_woman",
+    "voice": "alloy",
     "input": "Today is a wonderful day to build something people love.",
     "response_format": "wav"
   }' \
@@ -230,12 +223,9 @@ docker compose logs higgs-tts
 
 Common causes:
 
-- the vLLM server bound only to loopback instead of `0.0.0.0`
-- the model is still downloading or loading into GPU memory
-- the container exited before port `8000` became ready
+- the native Higgs model is still downloading or loading into GPU memory
 - the Hugging Face `hf-xet` download path is failing TLS handshakes in the container
-- the tokenizer repo and the vLLM tokenizer architecture do not agree on model dimensions
-- the tokenizer repo no longer ships the legacy `model.pth` filename that this vLLM image expects
+- the container exited before the native `/healthz` endpoint became ready
 
 The Higgs Audio model and tokenizer pages are public on Hugging Face, so this
 failure is usually not caused by gated-model approval. Still, setting `HF_TOKEN`
@@ -249,14 +239,3 @@ HF_HUB_DISABLE_XET=1
 
 This repo now defaults to that value in compose so model downloads fall back to
 the regular Hub path instead of the Xet transfer client.
-
-If logs show `size mismatch for ... HiggsAudioTokenizer`, confirm that the local
-tokenizer directory contains:
-
-```bash
-vendor/higgs-audio-v2-tokenizer/config.json
-vendor/higgs-audio-v2-tokenizer/model.pth
-```
-
-This repo uses a full tokenizer config compatible with the released checkpoint,
-paired with the legacy `model.pth` filename expected by the Boson vLLM loader.

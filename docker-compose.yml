@@ -40,43 +40,23 @@ services:
     restart: unless-stopped
 
   higgs-tts:
-    image: bosonai/higgs-audio-vllm:latest
+    build:
+      context: .
+      dockerfile: tts_service/Dockerfile
     container_name: whisper-higgs-tts
-    command:
-      - --host
-      - 0.0.0.0
-      - --served-model-name
-      - bosonai/higgs-audio-v2-generation-3B-base
-      - --model
-      - bosonai/higgs-audio-v2-generation-3B-base
-      - --audio-tokenizer-type
-      - ${HIGGS_AUDIO_TOKENIZER_REPO:-bosonai/higgs-audio-v2-tokenizer}
-      - --audio-tokenizer-path
-      - ${HIGGS_AUDIO_TOKENIZER_PATH:-/opt/higgs-audio-v2-tokenizer}
-      - --limit-mm-per-prompt
-      - audio=50
-      - --max-model-len
-      - "8192"
-      - --port
-      - "8000"
-      - --gpu-memory-utilization
-      - "0.8"
-      - --disable-mm-preprocessor-cache
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
-      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
       HF_HUB_DISABLE_XET: ${HF_HUB_DISABLE_XET:-1}
       CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
     gpus: all
     volumes:
       - ${HIGGS_CACHE_PATH:-/mnt/ssd1/whisper/higgs-cache}:/root/.cache/huggingface
-      - ./vendor/higgs-audio-v2-tokenizer:${HIGGS_AUDIO_TOKENIZER_PATH:-/opt/higgs-audio-v2-tokenizer}:ro
     healthcheck:
       test:
         - CMD
-        - python
+        - python3
         - -c
-        - import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=3).read()
+        - import urllib.request; urllib.request.urlopen("http://127.0.0.1:8000/healthz", timeout=3).read()
       interval: 15s
       timeout: 5s
       retries: 60
