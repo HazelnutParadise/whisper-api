@@ -25,6 +25,7 @@ services:
     container_name: whisper-asr
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
+      HF_HUB_DISABLE_XET: ${HF_HUB_DISABLE_XET:-1}
       HF_HOME: /app/models/hf-cache
       HUGGINGFACE_HUB_CACHE: /app/models/hf-cache/hub
       TRANSFORMERS_CACHE: /app/models/hf-cache/transformers
@@ -62,6 +63,7 @@ services:
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
       HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+      HF_HUB_DISABLE_XET: ${HF_HUB_DISABLE_XET:-1}
       CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
     gpus: all
     volumes:

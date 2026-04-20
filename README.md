@@ -122,6 +122,7 @@ Create `.env` from `.env.example` and set at least:
 
 ```bash
 HF_TOKEN=hf_xxx
+HF_HUB_DISABLE_XET=1
 CUDA_VISIBLE_DEVICES=0
 ASR_MODELS_PATH=/mnt/ssd1/whisper/models
 HIGGS_CACHE_PATH=/mnt/ssd1/whisper/higgs-cache
@@ -222,7 +223,17 @@ Common causes:
 - the vLLM server bound only to loopback instead of `0.0.0.0`
 - the model is still downloading or loading into GPU memory
 - the container exited before port `8000` became ready
+- the Hugging Face `hf-xet` download path is failing TLS handshakes in the container
 
 The Higgs Audio model and tokenizer pages are public on Hugging Face, so this
 failure is usually not caused by gated-model approval. Still, setting `HF_TOKEN`
 is recommended for reliable Hub downloads and rate limiting.
+
+If logs show `xet-core` retries with `tls handshake eof`, set:
+
+```bash
+HF_HUB_DISABLE_XET=1
+```
+
+This repo now defaults to that value in compose so model downloads fall back to
+the regular Hub path instead of the Xet transfer client.
