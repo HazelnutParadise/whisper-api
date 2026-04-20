@@ -50,7 +50,9 @@ services:
       - --model
       - bosonai/higgs-audio-v2-generation-3B-base
       - --audio-tokenizer-type
-      - ${HIGGS_AUDIO_TOKENIZER_REPO:-eustlb/higgs-audio-v2-tokenizer}
+      - ${HIGGS_AUDIO_TOKENIZER_REPO:-bosonai/higgs-audio-v2-tokenizer}
+      - --audio-tokenizer-path
+      - ${HIGGS_AUDIO_TOKENIZER_PATH:-/opt/higgs-audio-v2-tokenizer}
       - --limit-mm-per-prompt
       - audio=50
       - --max-model-len
@@ -68,6 +70,7 @@ services:
     gpus: all
     volumes:
       - ${HIGGS_CACHE_PATH:-/mnt/ssd1/whisper/higgs-cache}:/root/.cache/huggingface
+      - ./vendor/higgs-audio-v2-tokenizer:${HIGGS_AUDIO_TOKENIZER_PATH:-/opt/higgs-audio-v2-tokenizer}:ro
     healthcheck:
       test:
         - CMD
