@@ -5,6 +5,7 @@ from unittest.mock import patch
 import numpy as np
 from fastapi.testclient import TestClient
 
+import tts_service.app as tts_app
 from tts_service.app import (
     DEFAULT_BACKEND_TTS_MODEL,
     DEFAULT_SAMPLING_RATE,
@@ -65,17 +66,20 @@ class TTSServiceTests(unittest.TestCase):
         fake_processor = FakeProcessor(decoded=["decoded-audio"])
         fake_engine = EngineBundle(model=fake_model, processor=fake_processor)
 
-        with patch("tts_service.app.get_engine", return_value=fake_engine):
-            client = TestClient(app)
-            response = client.post(
-                "/v1/audio/speech",
-                json={
-                    "model": DEFAULT_BACKEND_TTS_MODEL,
-                    "input": "hello world",
-                    "voice": "alloy",
-                    "response_format": "pcm",
-                },
-            )
+        with (
+            patch("tts_service.app.preload_engine_async", autospec=True),
+            patch("tts_service.app.get_engine", return_value=fake_engine),
+        ):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/v1/audio/speech",
+                    json={
+                        "model": DEFAULT_BACKEND_TTS_MODEL,
+                        "input": "hello world",
+                        "voice": "alloy",
+                        "response_format": "pcm",
+                    },
+                )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["content-type"], "audio/pcm")
@@ -85,20 +89,59 @@ class TTSServiceTests(unittest.TestCase):
         self.assertEqual(fake_processor.decode_calls, [fake_outputs])
 
     def test_speech_endpoint_rejects_unknown_voice(self):
-        client = TestClient(app)
-
-        response = client.post(
-            "/v1/audio/speech",
-            json={
-                "model": DEFAULT_BACKEND_TTS_MODEL,
-                "input": "hello world",
-                "voice": "not-a-real-voice",
-                "response_format": "pcm",
-            },
-        )
+        with patch("tts_service.app.preload_engine_async", autospec=True):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/v1/audio/speech",
+                    json={
+                        "model": DEFAULT_BACKEND_TTS_MODEL,
+                        "input": "hello world",
+                        "voice": "not-a-real-voice",
+                        "response_format": "pcm",
+                    },
+                )
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("voice", response.json()["detail"])
+
+    def test_healthz_returns_503_while_engine_is_loading(self):
+        with (
+            patch("tts_service.app.preload_engine_async", autospec=True),
+            patch.object(tts_app, "_ENGINE", None),
+            patch.object(tts_app, "_ENGINE_LOADING", True, create=True),
+            patch.object(tts_app, "_ENGINE_ERROR", None, create=True),
+            patch(
+                "tts_service.app.get_engine",
+                side_effect=AssertionError("healthz should not block on get_engine"),
+            ),
+        ):
+            with TestClient(app) as client:
+                response = client.get("/healthz")
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["detail"], "Higgs engine is still loading.")
+
+    def test_healthz_returns_500_when_engine_preload_failed(self):
+        with (
+            patch("tts_service.app.preload_engine_async", autospec=True),
+            patch.object(tts_app, "_ENGINE", None),
+            patch.object(tts_app, "_ENGINE_LOADING", False, create=True),
+            patch.object(
+                tts_app,
+                "_ENGINE_ERROR",
+                RuntimeError("boom"),
+                create=True,
+            ),
+            patch(
+                "tts_service.app.get_engine",
+                side_effect=AssertionError("healthz should report cached preload errors"),
+            ),
+        ):
+            with TestClient(app) as client:
+                response = client.get("/healthz")
+
+        self.assertEqual(response.status_code, 500)
+        self.assertIn("boom", response.json()["detail"])
 
 
 if __name__ == "__main__":
