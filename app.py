@@ -10,29 +10,32 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import torch
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel, Field
+
+from whisper_service.config import (
+    MODELS_DOWNLOAD_ROOT,
+    SUPPORTED_TRANSCRIPTION_MODELS,
+    UPLOAD_FOLDER,
+    WHISPERX_AUTO_CHUNK_MIN_MB,
+    WHISPERX_BATCH_SIZE,
+    WHISPERX_CHUNK_OVERLAP_SECONDS,
+    WHISPERX_CHUNK_SECONDS,
+    WHISPERX_CHUNK_SPEAKER_MERGE_MIN_SIM,
+    get_diarization_token,
+    get_whisperx_compute_type,
+    get_whisperx_device,
+)
+from whisper_service.schemas import (
+    DiarizationSegment,
+    ErrorResponse,
+    SegmentTimestamp,
+    TranscriptionAdvancedResponse,
+    TranscriptionSimpleResponse,
+    WordTimestamp,
+)
 
 
 logger = logging.getLogger(__name__)
-
-UPLOAD_FOLDER = "./whisper_service"
-MODELS_DOWNLOAD_ROOT = "./models"
-
-WHISPERX_BATCH_SIZE = int(os.getenv("WHISPERX_BATCH_SIZE", "16"))
-WHISPERX_CHUNK_SECONDS = int(os.getenv("WHISPERX_CHUNK_SECONDS", "600"))
-WHISPERX_CHUNK_OVERLAP_SECONDS = float(
-    os.getenv("WHISPERX_CHUNK_OVERLAP_SECONDS", "3")
-)
-WHISPERX_AUTO_CHUNK_MIN_MB = float(os.getenv("WHISPERX_AUTO_CHUNK_MIN_MB", "100"))
-WHISPERX_CHUNK_SPEAKER_MERGE_MIN_SIM = float(
-    os.getenv("WHISPERX_CHUNK_SPEAKER_MERGE_MIN_SIM", "0.7")
-)
-SUPPORTED_TRANSCRIPTION_MODELS = {
-    "whisper-1": "turbo",
-    "turbo": "turbo",
-}
 
 whisperx_models: dict[str, Any] = {}
 whisperx_align_models: dict[str, tuple[Any, Any]] = {}
@@ -42,117 +45,10 @@ runtime_asset_errors: dict[str, str] = {}
 runtime_asset_events: dict[str, threading.Event] = {}
 runtime_asset_lock = threading.Lock()
 
-HF_HOME_DEFAULT = os.path.join(MODELS_DOWNLOAD_ROOT, "hf-cache")
-os.environ.setdefault("HF_HOME", HF_HOME_DEFAULT)
-os.environ.setdefault(
-    "HUGGINGFACE_HUB_CACHE",
-    os.path.join(os.environ["HF_HOME"], "hub"),
-)
-os.environ.setdefault(
-    "TRANSFORMERS_CACHE",
-    os.path.join(os.environ["HF_HOME"], "transformers"),
-)
-
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(MODELS_DOWNLOAD_ROOT, exist_ok=True)
-os.makedirs(os.environ["HF_HOME"], exist_ok=True)
-
-
-class ErrorResponse(BaseModel):
-    detail: str = Field(description="Human-readable error message.")
-
-
-class WordTimestamp(BaseModel):
-    word: str = Field(description="Recognized word token.")
-    start: float | None = Field(
-        default=None,
-        description="Word start time in seconds.",
-    )
-    end: float | None = Field(
-        default=None,
-        description="Word end time in seconds.",
-    )
-    speaker: str | None = Field(
-        default=None,
-        description="Speaker label when diarization is enabled.",
-    )
-
-
-class SegmentTimestamp(BaseModel):
-    id: int | None = Field(default=None, description="Segment index.")
-    start: float | None = Field(
-        default=None,
-        description="Segment start time in seconds.",
-    )
-    end: float | None = Field(
-        default=None,
-        description="Segment end time in seconds.",
-    )
-    text: str = Field(description="Transcript text for this segment.")
-    speaker: str | None = Field(
-        default=None,
-        description="Speaker label when diarization is enabled.",
-    )
-    words: list[WordTimestamp] | None = Field(
-        default=None,
-        description="Per-word timestamps when alignment is available.",
-    )
-
-
-class DiarizationSegment(BaseModel):
-    speaker: str | None = Field(
-        default=None,
-        description="Speaker label such as SPEAKER_00.",
-    )
-    start: float | None = Field(
-        default=None,
-        description="Speaker segment start time in seconds.",
-    )
-    end: float | None = Field(
-        default=None,
-        description="Speaker segment end time in seconds.",
-    )
-
-
-class TranscriptionSimpleResponse(BaseModel):
-    text: str = Field(description="Plain transcription text.")
-
-
-class TranscriptionAdvancedResponse(TranscriptionSimpleResponse):
-    language: str = Field(description="Detected language code.")
-    segments: list[SegmentTimestamp] = Field(
-        description="Aligned transcript segments with timestamps.",
-    )
-    diarization: list[DiarizationSegment] = Field(
-        description="Speaker diarization segments.",
-    )
-    speakers: list[str] = Field(
-        description="Unique speaker labels that appear in the audio.",
-    )
-
 
 def is_ffmpeg_available() -> bool:
     """Return whether ffmpeg is available on PATH."""
     return shutil.which("ffmpeg") is not None
-
-
-def get_whisperx_device() -> str:
-    """Choose the runtime device for WhisperX."""
-    return os.getenv(
-        "WHISPERX_DEVICE",
-        "cuda" if torch.cuda.is_available() else "cpu",
-    )
-
-
-def get_whisperx_compute_type() -> str:
-    """Choose WhisperX compute type based on device unless overridden."""
-    default = "float16" if get_whisperx_device() == "cuda" else "int8"
-    return os.getenv("WHISPERX_COMPUTE_TYPE", default)
-
-
-def get_diarization_token() -> str | None:
-    """Read the Hugging Face token used for WhisperX diarization."""
-    return os.getenv("WHISPERX_HF_TOKEN") or os.getenv("HF_TOKEN")
 
 
 def get_whisperx_module() -> Any:
@@ -214,7 +110,7 @@ def load_diarization_pipeline() -> Any:
     token = get_diarization_token()
     if not token:
         raise RuntimeError(
-            "WhisperX diarization requires WHISPERX_HF_TOKEN or HF_TOKEN."
+            "WhisperX diarization requires HF_TOKEN."
         )
 
     diarization_module = importlib.import_module("whisperx.diarize")
@@ -356,10 +252,10 @@ def ensure_runtime_assets_ready(
 
     if diarize:
         if not get_diarization_token():
-            raise HTTPException(
-                status_code=503,
-                detail="WhisperX diarization requires WHISPERX_HF_TOKEN or HF_TOKEN.",
-            )
+                raise HTTPException(
+                    status_code=503,
+                    detail="WhisperX diarization requires HF_TOKEN.",
+                )
 
         ensure_runtime_asset(
             resource=f"diarization:{get_diarization_resource_name()}",
@@ -1032,7 +928,7 @@ async def transcribe(
         True,
         description=(
             "Enable speaker diarization in advanced mode. Ignored when "
-            "`advanced=false`. Requires `WHISPERX_HF_TOKEN` or `HF_TOKEN`."
+            "`advanced=false`. Requires `HF_TOKEN`."
         ),
     ),
     min_speakers: int | None = Form(

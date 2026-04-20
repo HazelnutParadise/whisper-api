@@ -150,7 +150,7 @@ class TranscriptionsEndpointTests(unittest.TestCase):
                 create=True,
             )
         )
-        if env.get("WHISPERX_HF_TOKEN") or env.get("HF_TOKEN"):
+        if env.get("HF_TOKEN"):
             stack.enter_context(
                 patch.object(
                     whisper_app,
@@ -282,9 +282,7 @@ class TranscriptionsEndpointTests(unittest.TestCase):
         self.assertEqual(payload_data["speakers"], [])
 
     def test_advanced_transcription_returns_timestamps_and_speakers(self):
-        stack, route_paths = self.build_context(
-            {"WHISPERX_HF_TOKEN": "hf-test-token"}
-        )
+        stack, route_paths = self.build_context({"HF_TOKEN": "hf-test-token"})
         with stack:
             payload = asyncio.run(
                 whisper_app.transcribe(
@@ -385,7 +383,7 @@ class TranscriptionsEndpointTests(unittest.TestCase):
         self.assertEqual(mapping["SPEAKER_99"], "SPEAKER_01")
 
     def test_advanced_transcription_uses_chunked_pipeline_only_when_enabled(self):
-        stack, _ = self.build_context({"WHISPERX_HF_TOKEN": "hf-test-token"})
+        stack, _ = self.build_context({"HF_TOKEN": "hf-test-token"})
         chunked_payload = whisper_app.TranscriptionAdvancedResponse(
             text="chunked",
             language="en",
@@ -445,7 +443,16 @@ class TranscriptionsEndpointTests(unittest.TestCase):
 
         self.assertIn("/v1/audio/transcriptions", route_paths)
         self.assertEqual(raised.exception.status_code, 503)
-        self.assertIn("token", str(raised.exception.detail).lower())
+        self.assertIn("HF_TOKEN", str(raised.exception.detail))
+
+    def test_legacy_whisperx_token_is_no_longer_accepted(self):
+        stack, _ = self.build_context(
+            {"WHISPERX_HF_TOKEN": "hf-legacy-token", "HF_TOKEN": ""}
+        )
+        with stack:
+            token = whisper_app.get_diarization_token()
+
+        self.assertIsNone(token)
 
     def test_rejects_unsupported_model(self):
         stack, route_paths = self.build_context({})

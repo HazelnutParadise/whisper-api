@@ -1,28 +1,75 @@
 services:
-  whisper-api:
-    build: .
-    container_name: whisper-api
+  gateway:
+    build:
+      context: .
+      dockerfile: gateway/Dockerfile
+    container_name: whisper-gateway
     environment:
-      WHISPERX_HF_TOKEN: ${WHISPERX_HF_TOKEN}
+      ASR_BASE_URL: http://asr:5000
+      TTS_BASE_URL: http://higgs-tts:8000
+    ports:
+      - "5148:5000"
+    depends_on:
+      - asr
+      - higgs-tts
+    networks:
+      - speech-net
+    restart: unless-stopped
+
+  asr:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: whisper-asr
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
       HF_HOME: /app/models/hf-cache
       HUGGINGFACE_HUB_CACHE: /app/models/hf-cache/hub
       TRANSFORMERS_CACHE: /app/models/hf-cache/transformers
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - capabilities:
-                - gpu
-              count: all
-              driver: nvidia
-    ports:
-      - "5148:5000"
+      WHISPERX_DEVICE: ${WHISPERX_DEVICE:-cuda}
+      WHISPERX_COMPUTE_TYPE: ${WHISPERX_COMPUTE_TYPE:-float16}
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+    gpus: all
     volumes:
-      - /mnt/ssd1/whisper/models:/app/models
+      - asr-models:/app/models
     networks:
-      - infra-net
+      - speech-net
+    restart: unless-stopped
+
+  higgs-tts:
+    image: bosonai/higgs-audio-vllm:latest
+    container_name: whisper-higgs-tts
+    command:
+      - --served-model-name
+      - bosonai/higgs-audio-v2-generation-3B-base
+      - --model
+      - bosonai/higgs-audio-v2-generation-3B-base
+      - --audio-tokenizer-type
+      - bosonai/higgs-audio-v2-tokenizer
+      - --limit-mm-per-prompt
+      - audio=50
+      - --max-model-len
+      - "8192"
+      - --port
+      - "8000"
+      - --gpu-memory-utilization
+      - "0.8"
+      - --disable-mm-preprocessor-cache
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+    gpus: all
+    volumes:
+      - higgs-cache:/root/.cache/huggingface
+    networks:
+      - speech-net
     restart: unless-stopped
 
 networks:
-  infra-net:
-    external: true
+  speech-net:
+    driver: bridge
+
+volumes:
+  asr-models:
+  higgs-cache:
