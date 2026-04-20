@@ -91,7 +91,9 @@ SUPPORTED_TTS_MODELS = {
 }
 
 _ENGINE = None
-_ENGINE_LOCK = threading.Lock()
+_ENGINE_ERROR = None
+_ENGINE_LOADING = False
+_ENGINE_COND = threading.Condition()
 
 app = FastAPI()
 
@@ -120,14 +122,22 @@ class SpeechRequest(BaseModel):
 def get_engine() -> EngineBundle:
     """Load and cache the Transformers-native Higgs Audio V2 stack."""
     global _ENGINE
+    global _ENGINE_ERROR
+    global _ENGINE_LOADING
 
-    if _ENGINE is not None:
-        return _ENGINE
-
-    with _ENGINE_LOCK:
+    with _ENGINE_COND:
         if _ENGINE is not None:
             return _ENGINE
 
+        while _ENGINE_LOADING:
+            _ENGINE_COND.wait()
+            if _ENGINE is not None:
+                return _ENGINE
+
+        _ENGINE_LOADING = True
+        _ENGINE_ERROR = None
+
+    try:
         import torch
         from transformers import (
             AutoProcessor,
@@ -150,8 +160,90 @@ def get_engine() -> EngineBundle:
             torch_dtype=torch_dtype,
         ).to(device)
         model.eval()
-        _ENGINE = EngineBundle(model=model, processor=processor)
+        engine = EngineBundle(model=model, processor=processor)
+    except Exception as exc:
+        with _ENGINE_COND:
+            _ENGINE_LOADING = False
+            _ENGINE_ERROR = exc
+            _ENGINE_COND.notify_all()
+        raise
+
+    with _ENGINE_COND:
+        _ENGINE = engine
+        _ENGINE_LOADING = False
+        _ENGINE_ERROR = None
+        _ENGINE_COND.notify_all()
         return _ENGINE
+
+
+def preload_engine_async() -> None:
+    """Start model loading in a background thread if needed."""
+    global _ENGINE_LOADING
+    global _ENGINE_ERROR
+
+    with _ENGINE_COND:
+        if _ENGINE is not None or _ENGINE_LOADING:
+            return
+        _ENGINE_LOADING = True
+        _ENGINE_ERROR = None
+
+    def _worker() -> None:
+        global _ENGINE
+        global _ENGINE_ERROR
+        global _ENGINE_LOADING
+
+        try:
+            import torch
+            from transformers import (
+                AutoProcessor,
+                HiggsAudioV2ForConditionalGeneration,
+            )
+
+            model_name = os.environ.get(
+                "HIGGS_AUDIO_MODEL",
+                DEFAULT_BACKEND_TTS_MODEL,
+            )
+            device = os.environ.get(
+                "HIGGS_AUDIO_DEVICE",
+                "cuda" if torch.cuda.is_available() else "cpu",
+            )
+            torch_dtype = (
+                torch.bfloat16
+                if device.startswith("cuda")
+                else torch.float32
+            )
+
+            processor = AutoProcessor.from_pretrained(model_name)
+            model = HiggsAudioV2ForConditionalGeneration.from_pretrained(
+                model_name,
+                torch_dtype=torch_dtype,
+            ).to(device)
+            model.eval()
+            engine = EngineBundle(model=model, processor=processor)
+        except Exception as exc:
+            with _ENGINE_COND:
+                _ENGINE_LOADING = False
+                _ENGINE_ERROR = exc
+                _ENGINE_COND.notify_all()
+            return
+
+        with _ENGINE_COND:
+            _ENGINE = engine
+            _ENGINE_LOADING = False
+            _ENGINE_ERROR = None
+            _ENGINE_COND.notify_all()
+
+    threading.Thread(
+        target=_worker,
+        name="higgs-engine-preload",
+        daemon=True,
+    ).start()
+
+
+@app.on_event("startup")
+def startup_preload() -> None:
+    """Start model preload without blocking Uvicorn startup."""
+    preload_engine_async()
 
 
 def resolve_voice_name(voice: str) -> str:
@@ -254,9 +346,25 @@ def decoded_audio_to_pcm16le(decoded: object, processor: object) -> bytes:
 
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
-    """Report service readiness once the Transformers model has loaded."""
-    get_engine()
-    return {"status": "ok"}
+    """Report service readiness without triggering blocking model loads."""
+    with _ENGINE_COND:
+        if _ENGINE is not None:
+            return {"status": "ok"}
+        if _ENGINE_LOADING:
+            raise HTTPException(
+                status_code=503,
+                detail="Higgs engine is still loading.",
+            )
+        if _ENGINE_ERROR is not None:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Higgs engine preload failed: {_ENGINE_ERROR}",
+            )
+
+    raise HTTPException(
+        status_code=503,
+        detail="Higgs engine has not started loading yet.",
+    )
 
 
 @app.post("/v1/audio/speech")
