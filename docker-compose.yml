@@ -21,7 +21,7 @@ services:
   asr:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: whisper_service/Dockerfile
     container_name: whisper-asr
     environment:
       HF_TOKEN: ${HF_TOKEN:-}

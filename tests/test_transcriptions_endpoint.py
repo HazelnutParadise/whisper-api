@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException, UploadFile
 
-import app as whisper_app
+import whisper_service.app as whisper_app
 
 
 class FakeWhisperXModel:

@@ -14,6 +14,8 @@ RUN git clone https://github.com/boson-ai/higgs-audio.git \
     && pip install --no-cache-dir -e .
 
 WORKDIR /app
+COPY tts_service/requirements.txt ./tts_service-requirements.txt
+RUN pip install --no-cache-dir -r ./tts_service-requirements.txt
 COPY tts_service ./tts_service
 
 ENV HF_HUB_DISABLE_XET=1

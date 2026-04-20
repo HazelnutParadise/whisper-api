@@ -111,13 +111,13 @@ Install dependencies in the existing virtual environment:
 Run the ASR app directly:
 
 ```bash
-.venv\Scripts\python.exe app.py
+.venv\Scripts\python.exe -m whisper_service.app
 ```
 
 Or with uvicorn:
 
 ```bash
-.venv\Scripts\python.exe -m uvicorn app:app --host 0.0.0.0 --port 5000
+.venv\Scripts\python.exe -m uvicorn whisper_service.app:app --host 0.0.0.0 --port 5000
 ```
 
 ## Docker Compose

@@ -9,6 +9,5 @@ RUN apt-get update \
 
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py .
 COPY whisper_service ./whisper_service
-CMD ["python3", "app.py"]
+CMD ["python3", "-m", "whisper_service.app"]
