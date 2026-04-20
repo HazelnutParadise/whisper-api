@@ -50,7 +50,7 @@ services:
       - --model
       - bosonai/higgs-audio-v2-generation-3B-base
       - --audio-tokenizer-type
-      - bosonai/higgs-audio-v2-tokenizer
+      - ${HIGGS_AUDIO_TOKENIZER_REPO:-eustlb/higgs-audio-v2-tokenizer}
       - --limit-mm-per-prompt
       - audio=50
       - --max-model-len

@@ -123,6 +123,7 @@ Create `.env` from `.env.example` and set at least:
 ```bash
 HF_TOKEN=hf_xxx
 HF_HUB_DISABLE_XET=1
+HIGGS_AUDIO_TOKENIZER_REPO=eustlb/higgs-audio-v2-tokenizer
 CUDA_VISIBLE_DEVICES=0
 ASR_MODELS_PATH=/mnt/ssd1/whisper/models
 HIGGS_CACHE_PATH=/mnt/ssd1/whisper/higgs-cache
@@ -138,6 +139,12 @@ docker compose up --build
 The Higgs vLLM backend must bind to `0.0.0.0` inside its container. This repo's
 compose file now sets that explicitly and waits for the backend `/health`
 endpoint before starting the public gateway.
+
+For the Higgs tokenizer, this repo defaults to
+`eustlb/higgs-audio-v2-tokenizer`. That repository exposes the full tokenizer
+configuration used by the newer Transformers integration and avoids shape
+mismatches seen with the minimal config currently published on
+`bosonai/higgs-audio-v2-tokenizer`.
 
 Public gateway endpoint:
 
@@ -224,6 +231,7 @@ Common causes:
 - the model is still downloading or loading into GPU memory
 - the container exited before port `8000` became ready
 - the Hugging Face `hf-xet` download path is failing TLS handshakes in the container
+- the tokenizer repo and the vLLM tokenizer architecture do not agree on model dimensions
 
 The Higgs Audio model and tokenizer pages are public on Hugging Face, so this
 failure is usually not caused by gated-model approval. Still, setting `HF_TOKEN`
@@ -237,3 +245,13 @@ HF_HUB_DISABLE_XET=1
 
 This repo now defaults to that value in compose so model downloads fall back to
 the regular Hub path instead of the Xet transfer client.
+
+If logs show `size mismatch for ... HiggsAudioTokenizer`, switch or confirm:
+
+```bash
+HIGGS_AUDIO_TOKENIZER_REPO=eustlb/higgs-audio-v2-tokenizer
+```
+
+The current Boson tokenizer repo on Hugging Face exposes a minimal `config.json`,
+while the newer Transformers-compatible tokenizer repo exposes the full 1024-dim
+configuration that matches the released checkpoint.
