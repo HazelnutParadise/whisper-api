@@ -36,7 +36,7 @@ func TestModelsEndpointReturnsCombinedASRAndTTSModels(t *testing.T) {
 		"turbo":     false,
 		"tts-1":     false,
 		"tts-1-hd":  false,
-		"higgs-audio-v2-generation-3b": false,
+		"coqui-tts": false,
 	}
 	for _, model := range payload.Data {
 		if _, ok := want[model.ID]; ok {
@@ -97,7 +97,7 @@ func TestOpenAPIEndpointIncludesSpeechPath(t *testing.T) {
 	}
 }
 
-func TestSpeechEndpointMapsOpenAIAliasToHiggsBackendModel(t *testing.T) {
+func TestSpeechEndpointMapsOpenAIAliasToCoquiBackendModel(t *testing.T) {
 	tts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/audio/speech" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
@@ -142,7 +142,7 @@ func TestSpeechEndpointMapsOpenAIAliasToHiggsBackendModel(t *testing.T) {
 	}
 }
 
-func TestSpeechEndpointMapsPublicHiggsModelToCurrentBackendModel(t *testing.T) {
+func TestSpeechEndpointMapsPublicCoquiModelToCurrentBackendModel(t *testing.T) {
 	tts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -162,7 +162,7 @@ func TestSpeechEndpointMapsPublicHiggsModelToCurrentBackendModel(t *testing.T) {
 	req := httptest.NewRequest(
 		http.MethodPost,
 		"/v1/audio/speech",
-		strings.NewReader(`{"model":"higgs-audio-v2-generation-3b","input":"hello","voice":"alloy","response_format":"pcm"}`),
+		strings.NewReader(`{"model":"coqui-tts","input":"hello","voice":"alloy","response_format":"pcm"}`),
 	)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -180,7 +180,7 @@ func TestSpeechEndpointRejectsUpstreamRepositoryModelIDs(t *testing.T) {
 	req := httptest.NewRequest(
 		http.MethodPost,
 		"/v1/audio/speech",
-		strings.NewReader(`{"model":"bosonai/higgs-audio-v2-generation-3B-base","input":"hello","voice":"alloy","response_format":"pcm"}`),
+		strings.NewReader(`{"model":"eustlb/higgs-audio-v2-generation-3B-base","input":"hello","voice":"alloy","response_format":"pcm"}`),
 	)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -190,7 +190,7 @@ func TestSpeechEndpointRejectsUpstreamRepositoryModelIDs(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected status 400, got %d with body %s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "higgs-audio-v2-generation-3b") {
+	if !strings.Contains(rec.Body.String(), "coqui-tts") {
 		t.Fatalf("expected validation error to mention public model id, got %q", rec.Body.String())
 	}
 }

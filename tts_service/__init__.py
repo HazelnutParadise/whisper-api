@@ -1,1 +1,1 @@
-"""Native Higgs Audio TTS service."""
+"""Native Coqui TTS service."""

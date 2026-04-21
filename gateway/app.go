@@ -145,7 +145,7 @@ func (a *App) handleSpeech(w http.ResponseWriter, r *http.Request) {
 			w,
 			http.StatusBadRequest,
 			errorResponse{
-				Detail: "model must be one of tts-1, tts-1-hd, higgs-audio-v2-generation-3b.",
+				Detail: "model must be one of tts-1, tts-1-hd, coqui-tts.",
 			},
 		)
 		return

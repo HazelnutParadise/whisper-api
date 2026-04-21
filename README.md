@@ -4,7 +4,7 @@ An OpenAI-compatible speech stack with three services:
 
 - `gateway`: Go entrypoint for `/v1/models`, `/v1/audio/transcriptions`, `/v1/audio/speech`, `/openapi.json`, `/docs`, and `/redoc`
 - `asr`: FastAPI + WhisperX backend for transcription
-- `higgs-tts`: native Python Higgs Audio backend for TTS with CUDA
+- `coqui-tts`: FastAPI + Coqui TTS backend for text-to-speech
 
 Only the Go gateway is exposed publicly. The ASR and TTS services stay on the
 internal Docker network.
@@ -15,7 +15,7 @@ internal Docker network.
 client
   -> gateway (Go, port 5000)
        -> asr (FastAPI, WhisperX)
-       -> higgs-tts (native Transformers Higgs Audio V2)
+       -> coqui-tts (FastAPI, Coqui TTS)
 ```
 
 ## Endpoints
@@ -28,7 +28,7 @@ Returns a combined model list for ASR and TTS:
 - `turbo`
 - `tts-1`
 - `tts-1-hd`
-- `higgs-audio-v2-generation-3b`
+- `coqui-tts`
 
 ### `POST /v1/audio/transcriptions`
 
@@ -58,6 +58,12 @@ OpenAI-style JSON TTS endpoint. The gateway accepts:
 - `stream`
 - `stream_format`
 
+Supported public TTS model values:
+
+- `tts-1`
+- `tts-1-hd`
+- `coqui-tts`
+
 Supported `response_format` values:
 
 - `mp3`
@@ -69,63 +75,27 @@ Supported `response_format` values:
 
 `stream_format` currently supports only `audio`. `sse` is rejected with `400`.
 
-The native TTS backend accepts OpenAI voice aliases such as `alloy`, `ash`,
-and `shimmer`, and maps them onto bundled Higgs prompt voices. It also accepts
-direct Higgs prompt names such as `belinda`, `en_woman`, `en_man`,
-`broom_salesman`, `mabel`, and `chadwick`.
+The `voice` field is accepted for OpenAI compatibility. The default Coqui model
+is a single-speaker model, so voice changes require switching to a multi-speaker
+or voice-cloning Coqui model and setting `COQUI_TTS_SPEAKER`,
+`COQUI_TTS_LANGUAGE`, or `COQUI_TTS_SPEAKER_WAV`.
 
-## Higgs Audio Notes
+## Coqui TTS Notes
 
-The compose file builds a native Python Higgs service around the Transformers
-`AutoProcessor` + `HiggsAudioV2ForConditionalGeneration` path instead of the
-published vLLM image or the older `boson_multimodal` wrapper.
+The TTS backend uses the Coqui Python API from `coqui-ai/TTS` instead of the
+previous Higgs Audio implementation.
 
-This avoids the tokenizer, config, and loader incompatibilities we observed in
-`bosonai/higgs-audio-vllm:latest`, while keeping the public API surface
-OpenAI-compatible through the Go gateway.
+Default backend model:
 
-For the native Transformers path, the current Hugging Face docs use
-`eustlb/higgs-audio-v2-generation-3B-base` in supported examples, so this repo
-uses that internally as the backend model. The public API does not expose
-upstream repository ids; it accepts stable public model names such as `tts-1`,
-`tts-1-hd`, and `higgs-audio-v2-generation-3b`.
-
-Higgs Audio is multilingual, but it should not be treated as "all languages
-supported." The strongest evidence currently points to English, Chinese
-(primarily Mandarin), Korean, German, and Spanish. Other languages should be
-treated as best-effort.
-
-## Latest-First Version Policy
-
-This repo follows a latest-first policy:
-
-- prefer current stable Go for the gateway
-- prefer current compatible Python packages for the ASR service
-- use the current upstream native Higgs Python engine first
-- only pin or roll back further when build or runtime verification fails
-
-The local verified Python test environment in this repo is currently the
-existing `.venv` with Python `3.12.11`.
-
-## Local Python ASR Development
-
-Install dependencies in the existing virtual environment:
-
-```bash
-.venv\Scripts\python.exe -m pip install -r requirements.txt
+```text
+tts_models/en/ljspeech/vits
 ```
 
-Run the ASR app directly:
+The public API does not expose backend repository/model names directly. The
+gateway maps `tts-1`, `tts-1-hd`, and `coqui-tts` to the configured Coqui model.
 
-```bash
-.venv\Scripts\python.exe -m whisper_service.app
-```
-
-Or with uvicorn:
-
-```bash
-.venv\Scripts\python.exe -m uvicorn whisper_service.app:app --host 0.0.0.0 --port 5000
-```
+Coqui TTS package support is Python `>=3.9,<3.12`, so the Docker TTS service uses
+the Python 3.11 PyTorch CUDA runtime image.
 
 ## Docker Compose
 
@@ -136,16 +106,16 @@ HF_TOKEN=hf_xxx
 HF_HUB_DISABLE_XET=1
 CUDA_VISIBLE_DEVICES=0
 ASR_CUDA_VISIBLE_DEVICES=0
-HIGGS_CUDA_VISIBLE_DEVICES=0
+COQUI_CUDA_VISIBLE_DEVICES=0
 WHISPERX_UNLOAD_AFTER_REQUEST=1
 ASR_MODELS_PATH=/mnt/ssd1/whisper/models
-HIGGS_CACHE_PATH=/mnt/ssd1/whisper/higgs-cache
-HIGGS_AUDIO_MODEL=eustlb/higgs-audio-v2-generation-3B-base
-HIGGS_AUDIO_DEVICE_MAP=auto
-HIGGS_PRELOAD_ON_STARTUP=0
-HIGGS_HEALTH_REQUIRE_MODEL=0
-HIGGS_UNLOAD_AFTER_REQUEST=1
-HIGGS_EXIT_AFTER_REQUEST=1
+COQUI_CACHE_PATH=/mnt/ssd1/whisper/coqui-cache
+COQUI_TTS_MODEL=tts_models/en/ljspeech/vits
+COQUI_TTS_DEVICE=cuda
+COQUI_TTS_PRELOAD_ON_STARTUP=0
+COQUI_TTS_HEALTH_REQUIRE_MODEL=0
+COQUI_TTS_UNLOAD_AFTER_REQUEST=1
+COQUI_TTS_EXIT_AFTER_REQUEST=1
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 ```
 
@@ -156,35 +126,17 @@ docker network create infra-net
 docker compose up --build
 ```
 
-The native Higgs backend exposes `/healthz`, and compose waits for that
-endpoint before starting the public gateway. By default `/healthz` only checks
-that the HTTP service is alive; the Higgs model is loaded lazily on the first
-TTS request so ASR does not lose GPU memory at startup. Set
-`HIGGS_PRELOAD_ON_STARTUP=1` and `HIGGS_HEALTH_REQUIRE_MODEL=1` only when you
-want Docker health to mean "TTS model already loaded".
+The Coqui backend exposes `/healthz`, and compose waits for that endpoint before
+starting the public gateway. By default `/healthz` only checks that the HTTP
+service is alive; the Coqui model is loaded lazily on the first TTS request. Set
+`COQUI_TTS_PRELOAD_ON_STARTUP=1` and `COQUI_TTS_HEALTH_REQUIRE_MODEL=1` only
+when Docker health should mean "TTS model already loaded".
 
 By default `WHISPERX_UNLOAD_AFTER_REQUEST=1` and
-`HIGGS_UNLOAD_AFTER_REQUEST=1` unload models and clear CUDA cache after each
-STT/TTS request. This keeps GPU memory available when alternating between ASR
-and TTS on single-GPU hosts. Set either value to `0` only if you prefer faster
-repeated requests for that service and have enough VRAM for both models.
-
-By default `HIGGS_EXIT_AFTER_REQUEST=1` also exits the TTS worker after the
-HTTP response is sent. Docker restarts it immediately, and because Higgs loads
-lazily, the restarted service does not reload the model until the next TTS
-request. This is more reliable than CUDA cache cleanup alone because it fully
-destroys the TTS process CUDA context before a later STT request tries to load
-WhisperX on the same GPU.
-
-By default `HIGGS_AUDIO_DEVICE_MAP=auto` follows the upstream Transformers
-Higgs Audio loading path. This lets Transformers/Accelerate avoid the older
-"load on CPU, then move the whole model to CUDA" step that can fail on 12GB
-GPUs while moving the model.
-
-On single-GPU hosts, keep `ASR_CUDA_VISIBLE_DEVICES` and
-`HIGGS_CUDA_VISIBLE_DEVICES` on the same GPU only if there is enough VRAM for
-both WhisperX and Higgs. On multi-GPU hosts, split them, for example
-`ASR_CUDA_VISIBLE_DEVICES=0` and `HIGGS_CUDA_VISIBLE_DEVICES=1`.
+`COQUI_TTS_UNLOAD_AFTER_REQUEST=1` unload models and clear CUDA cache after each
+STT/TTS request. `COQUI_TTS_EXIT_AFTER_REQUEST=1` also exits the TTS worker
+after the HTTP response is sent so Docker can fully release the TTS CUDA context
+before a later STT request loads WhisperX on the same GPU.
 
 Public gateway endpoint:
 
@@ -204,18 +156,6 @@ Docs:
 curl -X POST "http://localhost:5148/v1/audio/transcriptions" \
   -F "file=@audio.wav" \
   -F "model=whisper-1"
-```
-
-### Advanced transcription
-
-```bash
-curl -X POST "http://localhost:5148/v1/audio/transcriptions" \
-  -F "file=@audio.wav" \
-  -F "model=whisper-1" \
-  -F "advanced=true" \
-  -F "diarize=true" \
-  -F "min_speakers=1" \
-  -F "max_speakers=3"
 ```
 
 ### TTS
@@ -240,6 +180,12 @@ Python ASR tests:
 .venv\Scripts\python.exe -m unittest tests.test_transcriptions_endpoint -v
 ```
 
+Python TTS tests:
+
+```bash
+.venv\Scripts\python.exe -m unittest tests.test_tts_service -v
+```
+
 Go gateway tests:
 
 ```bash
@@ -255,44 +201,26 @@ If `POST /v1/audio/speech` returns:
 TTS backend request failed: ... connect: connection refused
 ```
 
-that usually means the `higgs-tts` container is not listening yet, not that the
-OpenAI-compatible route shape is wrong.
+that usually means the `coqui-tts` container is not listening yet.
 
 Check:
 
 ```bash
 docker compose ps
-docker compose logs higgs-tts
+docker compose logs coqui-tts
+nvidia-smi
 ```
 
 Common causes:
 
-- the native Higgs model is still downloading or loading into GPU memory
+- the Coqui model is still downloading or loading into GPU memory
 - ASR and TTS are both trying to load large models onto the same GPU
 - the GPU still has orphaned model processes from previous containers
-- the Hugging Face `hf-xet` download path is failing TLS handshakes in the container
-- the container exited before the native `/healthz` endpoint became ready
+- the selected Coqui model requires a `speaker`, `language`, or `speaker_wav`
 
-If the response is `503` with "TTS backend ran out of GPU memory", check:
-
-```bash
-nvidia-smi
-docker compose ps
-docker compose logs --tail 100 higgs-tts
-```
-
-Then free old containers/processes or reduce `HIGGS_AUDIO_MAX_NEW_TOKENS`.
-On a multi-GPU machine, prefer splitting ASR and TTS across separate GPUs.
-
-The Higgs Audio model and tokenizer pages are public on Hugging Face, so this
-failure is usually not caused by gated-model approval. Still, setting `HF_TOKEN`
-is recommended for reliable Hub downloads and rate limiting.
-
-If logs show `xet-core` retries with `tls handshake eof`, set:
+For a multi-GPU host, split ASR and TTS:
 
 ```bash
-HF_HUB_DISABLE_XET=1
+ASR_CUDA_VISIBLE_DEVICES=0
+COQUI_CUDA_VISIBLE_DEVICES=1
 ```
-
-This repo now defaults to that value in compose so model downloads fall back to
-the regular Hub path instead of the Xet transfer client.

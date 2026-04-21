@@ -6,13 +6,13 @@ services:
     container_name: whisper-gateway
     environment:
       ASR_BASE_URL: http://asr:5000
-      TTS_BASE_URL: http://higgs-tts:8000
+      TTS_BASE_URL: http://coqui-tts:8000
     ports:
       - "5148:5000"
     depends_on:
       asr:
         condition: service_started
-      higgs-tts:
+      coqui-tts:
         condition: service_healthy
     networks:
       - speech-net
@@ -40,25 +40,24 @@ services:
       - speech-net
     restart: unless-stopped
 
-  higgs-tts:
+  coqui-tts:
     build:
       context: .
       dockerfile: tts_service/Dockerfile
-    container_name: whisper-higgs-tts
+    container_name: whisper-coqui-tts
     environment:
-      HF_TOKEN: ${HF_TOKEN:-}
       HF_HUB_DISABLE_XET: ${HF_HUB_DISABLE_XET:-1}
-      HIGGS_AUDIO_MODEL: ${HIGGS_AUDIO_MODEL:-eustlb/higgs-audio-v2-generation-3B-base}
-      HIGGS_AUDIO_DEVICE_MAP: ${HIGGS_AUDIO_DEVICE_MAP:-auto}
-      HIGGS_PRELOAD_ON_STARTUP: ${HIGGS_PRELOAD_ON_STARTUP:-0}
-      HIGGS_HEALTH_REQUIRE_MODEL: ${HIGGS_HEALTH_REQUIRE_MODEL:-0}
-      HIGGS_UNLOAD_AFTER_REQUEST: ${HIGGS_UNLOAD_AFTER_REQUEST:-1}
-      HIGGS_EXIT_AFTER_REQUEST: ${HIGGS_EXIT_AFTER_REQUEST:-1}
+      COQUI_TTS_MODEL: ${COQUI_TTS_MODEL:-tts_models/en/ljspeech/vits}
+      COQUI_TTS_DEVICE: ${COQUI_TTS_DEVICE:-cuda}
+      COQUI_TTS_PRELOAD_ON_STARTUP: ${COQUI_TTS_PRELOAD_ON_STARTUP:-0}
+      COQUI_TTS_HEALTH_REQUIRE_MODEL: ${COQUI_TTS_HEALTH_REQUIRE_MODEL:-0}
+      COQUI_TTS_UNLOAD_AFTER_REQUEST: ${COQUI_TTS_UNLOAD_AFTER_REQUEST:-1}
+      COQUI_TTS_EXIT_AFTER_REQUEST: ${COQUI_TTS_EXIT_AFTER_REQUEST:-1}
       PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
-      CUDA_VISIBLE_DEVICES: ${HIGGS_CUDA_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-0}}
+      CUDA_VISIBLE_DEVICES: ${COQUI_CUDA_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-0}}
     gpus: all
     volumes:
-      - ${HIGGS_CACHE_PATH:-/mnt/ssd1/whisper/higgs-cache}:/root/.cache/huggingface
+      - ${COQUI_CACHE_PATH:-/mnt/ssd1/whisper/coqui-cache}:/root/.local/share/tts
     healthcheck:
       test:
         - CMD

@@ -38,7 +38,7 @@ func buildOpenAPISpec() map[string]any {
 			},
 			"/v1/audio/speech": map[string]any{
 				"post": map[string]any{
-					"summary": "Generate speech with Higgs TTS through an OpenAI-compatible interface",
+					"summary": "Generate speech with Coqui TTS through an OpenAI-compatible interface",
 					"requestBody": map[string]any{
 						"required": true,
 						"content": map[string]any{

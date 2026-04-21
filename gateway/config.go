@@ -8,8 +8,8 @@ import (
 
 const (
 	DefaultSamplingRate    = 24000
-	DefaultBackendTTSModel = "eustlb/higgs-audio-v2-generation-3B-base"
-	PublicBackendTTSModel  = "higgs-audio-v2-generation-3b"
+	DefaultBackendTTSModel = "tts_models/en/ljspeech/vits"
+	PublicBackendTTSModel  = "coqui-tts"
 )
 
 type Config struct {
