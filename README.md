@@ -115,6 +115,10 @@ Model caches are fixed inside the images and backed by the mounted volumes:
 - Coqui cache: `/root/.local/share/tts` via `/mnt/ssd1/whisper/coqui-cache:/root/.local/share/tts`
 - TTS Hugging Face cache: `/root/.local/share/tts/hf-cache`, under the same Coqui cache mount
 
+The TTS container sets `COQUI_TOS_AGREED=1` because XTTS v2 otherwise prompts
+for license acceptance on first load, which fails in Docker with
+`EOF when reading a line`.
+
 Start all three services:
 
 ```bash

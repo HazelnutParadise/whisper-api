@@ -46,6 +46,7 @@ services:
       HF_HOME: /root/.local/share/tts/hf-cache
       HUGGINGFACE_HUB_CACHE: /root/.local/share/tts/hf-cache/hub
       TRANSFORMERS_CACHE: /root/.local/share/tts/hf-cache/transformers
+      COQUI_TOS_AGREED: "1"
     gpus: all
     volumes:
       - /mnt/ssd1/whisper/coqui-cache:/root/.local/share/tts
