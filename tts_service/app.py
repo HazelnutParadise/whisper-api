@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
-from starlette.background import BackgroundTask
 
 
 DEFAULT_BACKEND_TTS_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
@@ -235,24 +234,6 @@ def cleanup_request_runtime_refs(runtime_refs: dict[str, object]) -> None:
     clear_cuda_cache()
 
 
-def exit_process_after_response() -> None:
-    """Exit after the response is sent so Docker can release CUDA context."""
-    LOGGER.info("Exiting Coqui TTS worker after request to release CUDA context.")
-    os._exit(0)
-
-
-def should_exit_after_response() -> bool:
-    """Only Docker needs process exit to release the CUDA context."""
-    return os.path.exists("/.dockerenv")
-
-
-def response_background_task() -> BackgroundTask | None:
-    """Return a post-response task for aggressive CUDA context release."""
-    if should_exit_after_response():
-        return BackgroundTask(exit_process_after_response)
-    return None
-
-
 @app.on_event("startup")
 def startup_preload() -> None:
     """Keep startup cheap; the model loads on the first TTS request."""
@@ -415,10 +396,8 @@ def create_speech(payload: SpeechRequest):
         return StreamingResponse(
             iter([pcm_bytes]),
             media_type="audio/pcm",
-            background=response_background_task(),
         )
     return Response(
         content=pcm_bytes,
         media_type="audio/pcm",
-        background=response_background_task(),
     )

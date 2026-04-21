@@ -157,31 +157,6 @@ class TTSServiceTests(unittest.TestCase):
         self.assertEqual(runtime_refs, {})
         clear_cuda_cache.assert_called_once()
 
-    def test_speech_endpoint_exits_after_response_to_release_cuda_context(self):
-        fake_engine = EngineBundle(model=FakeCoquiModel())
-
-        with (
-            patch("tts_service.app.preload_engine_async", autospec=True),
-            patch("tts_service.app.get_engine", return_value=fake_engine),
-            patch("tts_service.app.wav_file_to_pcm16le", return_value=b"\x00\x01"),
-            patch("tts_service.app.unload_engine", autospec=True),
-            patch("tts_service.app.should_exit_after_response", return_value=True),
-            patch("tts_service.app.os._exit", autospec=True) as exit_process,
-        ):
-            with TestClient(app) as client:
-                response = client.post(
-                    "/v1/audio/speech",
-                    json={
-                        "model": PUBLIC_BACKEND_TTS_MODEL,
-                        "input": "hello world",
-                        "voice": "alloy",
-                        "response_format": "pcm",
-                    },
-                )
-
-        self.assertEqual(response.status_code, 200)
-        exit_process.assert_called_once_with(0)
-
     def test_speech_endpoint_reports_cuda_oom_as_service_unavailable(self):
         with (
             patch("tts_service.app.preload_engine_async", autospec=True),

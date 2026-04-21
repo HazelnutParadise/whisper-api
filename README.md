@@ -131,8 +131,8 @@ starting the public gateway. `/healthz` only checks that the HTTP service is
 alive; the Coqui model is loaded lazily on the first TTS request.
 
 The ASR backend unloads WhisperX after each request. The TTS backend unloads
-Coqui and exits its worker after each response so Docker fully releases the TTS
-CUDA context before a later STT request loads WhisperX on the same GPU.
+Coqui and clears CUDA cache after each request. It does not kill the worker
+process after sending a response, because that can reset the gateway connection.
 
 Public gateway endpoint:
 
