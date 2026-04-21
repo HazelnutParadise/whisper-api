@@ -142,6 +142,7 @@ HIGGS_CACHE_PATH=/mnt/ssd1/whisper/higgs-cache
 HIGGS_AUDIO_MODEL=eustlb/higgs-audio-v2-generation-3B-base
 HIGGS_PRELOAD_ON_STARTUP=0
 HIGGS_HEALTH_REQUIRE_MODEL=0
+HIGGS_UNLOAD_AFTER_REQUEST=1
 ```
 
 Start all three services:
@@ -157,6 +158,11 @@ that the HTTP service is alive; the Higgs model is loaded lazily on the first
 TTS request so ASR does not lose GPU memory at startup. Set
 `HIGGS_PRELOAD_ON_STARTUP=1` and `HIGGS_HEALTH_REQUIRE_MODEL=1` only when you
 want Docker health to mean "TTS model already loaded".
+
+By default `HIGGS_UNLOAD_AFTER_REQUEST=1` unloads the Higgs model and clears
+CUDA cache after every TTS request. This keeps GPU memory available for STT on
+single-GPU hosts. Set it to `0` only if you prefer faster repeated TTS requests
+and have enough VRAM for both TTS and ASR models.
 
 On single-GPU hosts, keep `ASR_CUDA_VISIBLE_DEVICES` and
 `HIGGS_CUDA_VISIBLE_DEVICES` on the same GPU only if there is enough VRAM for

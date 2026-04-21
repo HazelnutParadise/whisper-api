@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import gc
 import os
 import tempfile
 import threading
@@ -97,6 +98,7 @@ _ENGINE = None
 _ENGINE_ERROR = None
 _ENGINE_LOADING = False
 _ENGINE_COND = threading.Condition()
+_INFERENCE_LOCK = threading.Lock()
 
 app = FastAPI()
 LOGGER = logging.getLogger("uvicorn.error")
@@ -264,6 +266,34 @@ def preload_engine_async() -> None:
     ).start()
 
 
+def unload_engine() -> None:
+    """Drop the cached Higgs model and release CUDA memory."""
+    global _ENGINE
+
+    with _ENGINE_COND:
+        engine = _ENGINE
+        _ENGINE = None
+        _ENGINE_COND.notify_all()
+
+    if engine is None:
+        return
+
+    LOGGER.info("Unloading Higgs engine after TTS request...")
+    del engine
+    gc.collect()
+
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+    except Exception:
+        LOGGER.exception("Failed to fully clear CUDA cache after Higgs unload.")
+
+    LOGGER.info("Higgs engine unloaded.")
+
+
 @app.on_event("startup")
 def startup_preload() -> None:
     """Optionally start model preload without blocking Uvicorn startup."""
@@ -425,35 +455,43 @@ def create_speech(payload: SpeechRequest):
             detail="stream_format must be omitted or set to `audio`.",
         )
 
-    conversation = build_chat_ml_sample(
-        payload.input,
-        payload.voice,
-        payload.instructions,
-    )
-    bundle = get_engine()
-    temperature = float(
-        os.environ.get("HIGGS_AUDIO_TEMPERATURE", DEFAULT_TEMPERATURE)
-    )
-    inputs = bundle.processor.apply_chat_template(
-        conversation,
-        add_generation_prompt=True,
-        tokenize=True,
-        return_dict=True,
-        sampling_rate=DEFAULT_SAMPLING_RATE,
-        return_tensors="pt",
-    ).to(bundle.model.device)
-    outputs = bundle.model.generate(
-        **inputs,
-        max_new_tokens=int(
-            os.environ.get("HIGGS_AUDIO_MAX_NEW_TOKENS", DEFAULT_MAX_NEW_TOKENS)
-        ),
-        do_sample=temperature > 0,
-        temperature=temperature,
-        top_p=float(os.environ.get("HIGGS_AUDIO_TOP_P", DEFAULT_TOP_P)),
-        top_k=int(os.environ.get("HIGGS_AUDIO_TOP_K", DEFAULT_TOP_K)),
-    )
-    decoded = bundle.processor.batch_decode(outputs)
-    pcm_bytes = decoded_audio_to_pcm16le(decoded, bundle.processor)
+    with _INFERENCE_LOCK:
+        try:
+            conversation = build_chat_ml_sample(
+                payload.input,
+                payload.voice,
+                payload.instructions,
+            )
+            bundle = get_engine()
+            temperature = float(
+                os.environ.get("HIGGS_AUDIO_TEMPERATURE", DEFAULT_TEMPERATURE)
+            )
+            inputs = bundle.processor.apply_chat_template(
+                conversation,
+                add_generation_prompt=True,
+                tokenize=True,
+                return_dict=True,
+                sampling_rate=DEFAULT_SAMPLING_RATE,
+                return_tensors="pt",
+            ).to(bundle.model.device)
+            outputs = bundle.model.generate(
+                **inputs,
+                max_new_tokens=int(
+                    os.environ.get(
+                        "HIGGS_AUDIO_MAX_NEW_TOKENS",
+                        DEFAULT_MAX_NEW_TOKENS,
+                    )
+                ),
+                do_sample=temperature > 0,
+                temperature=temperature,
+                top_p=float(os.environ.get("HIGGS_AUDIO_TOP_P", DEFAULT_TOP_P)),
+                top_k=int(os.environ.get("HIGGS_AUDIO_TOP_K", DEFAULT_TOP_K)),
+            )
+            decoded = bundle.processor.batch_decode(outputs)
+            pcm_bytes = decoded_audio_to_pcm16le(decoded, bundle.processor)
+        finally:
+            if env_flag("HIGGS_UNLOAD_AFTER_REQUEST", default=True):
+                unload_engine()
 
     if payload.stream:
         return StreamingResponse(iter([pcm_bytes]), media_type="audio/pcm")

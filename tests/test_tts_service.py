@@ -70,6 +70,7 @@ class TTSServiceTests(unittest.TestCase):
         with (
             patch("tts_service.app.preload_engine_async", autospec=True),
             patch("tts_service.app.get_engine", return_value=fake_engine),
+            patch("tts_service.app.unload_engine", autospec=True) as unload_engine,
         ):
             with TestClient(app) as client:
                 response = client.post(
@@ -88,6 +89,34 @@ class TTSServiceTests(unittest.TestCase):
         self.assertEqual(fake_processor.apply_calls[0][0][0][0]["role"], "system")
         self.assertEqual(fake_model.calls[0]["input_ids"], "fake-input-ids")
         self.assertEqual(fake_processor.decode_calls, [fake_outputs])
+        unload_engine.assert_called_once()
+
+    def test_speech_endpoint_can_keep_engine_loaded_when_configured(self):
+        fake_outputs = {"audio_tokens": [1, 2, 3]}
+        fake_engine = EngineBundle(
+            model=FakeModel(fake_outputs),
+            processor=FakeProcessor(decoded=["decoded-audio"]),
+        )
+
+        with (
+            patch.dict("os.environ", {"HIGGS_UNLOAD_AFTER_REQUEST": "0"}),
+            patch("tts_service.app.preload_engine_async", autospec=True),
+            patch("tts_service.app.get_engine", return_value=fake_engine),
+            patch("tts_service.app.unload_engine", autospec=True) as unload_engine,
+        ):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/v1/audio/speech",
+                    json={
+                        "model": PUBLIC_BACKEND_TTS_MODEL,
+                        "input": "hello world",
+                        "voice": "alloy",
+                        "response_format": "pcm",
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200)
+        unload_engine.assert_not_called()
 
     def test_speech_endpoint_rejects_unknown_voice(self):
         with patch("tts_service.app.preload_engine_async", autospec=True):
