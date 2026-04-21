@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 import threading
+import time
 import wave
 from dataclasses import dataclass
 
@@ -97,6 +99,7 @@ _ENGINE_LOADING = False
 _ENGINE_COND = threading.Condition()
 
 app = FastAPI()
+LOGGER = logging.getLogger("uvicorn.error")
 
 
 @dataclass
@@ -120,6 +123,64 @@ class SpeechRequest(BaseModel):
     stream_format: str | None = None
 
 
+def load_engine_from_environment() -> EngineBundle:
+    """Load the Higgs processor/model pair with phase-level logging."""
+    import torch
+    from transformers import (
+        AutoProcessor,
+        HiggsAudioV2ForConditionalGeneration,
+    )
+
+    start_time = time.monotonic()
+    model_name = os.environ.get(
+        "HIGGS_AUDIO_MODEL",
+        DEFAULT_BACKEND_TTS_MODEL,
+    )
+    device = os.environ.get(
+        "HIGGS_AUDIO_DEVICE",
+        "cuda" if torch.cuda.is_available() else "cpu",
+    )
+    torch_dtype = torch.bfloat16 if device.startswith("cuda") else torch.float32
+
+    LOGGER.info(
+        "Loading Higgs engine: model=%s device=%s dtype=%s",
+        model_name,
+        device,
+        torch_dtype,
+    )
+
+    phase_start = time.monotonic()
+    LOGGER.info("Loading Higgs processor...")
+    processor = AutoProcessor.from_pretrained(model_name)
+    LOGGER.info(
+        "Loaded Higgs processor in %.1fs",
+        time.monotonic() - phase_start,
+    )
+
+    phase_start = time.monotonic()
+    LOGGER.info("Loading Higgs model weights...")
+    model = HiggsAudioV2ForConditionalGeneration.from_pretrained(
+        model_name,
+        torch_dtype=torch_dtype,
+    )
+    LOGGER.info(
+        "Loaded Higgs model weights in %.1fs",
+        time.monotonic() - phase_start,
+    )
+
+    phase_start = time.monotonic()
+    LOGGER.info("Moving Higgs model to %s...", device)
+    model = model.to(device)
+    model.eval()
+    LOGGER.info(
+        "Moved Higgs model to %s in %.1fs",
+        device,
+        time.monotonic() - phase_start,
+    )
+    LOGGER.info("Higgs engine ready in %.1fs", time.monotonic() - start_time)
+    return EngineBundle(model=model, processor=processor)
+
+
 def get_engine() -> EngineBundle:
     """Load and cache the Transformers-native Higgs Audio V2 stack."""
     global _ENGINE
@@ -139,30 +200,9 @@ def get_engine() -> EngineBundle:
         _ENGINE_ERROR = None
 
     try:
-        import torch
-        from transformers import (
-            AutoProcessor,
-            HiggsAudioV2ForConditionalGeneration,
-        )
-
-        model_name = os.environ.get(
-            "HIGGS_AUDIO_MODEL",
-            DEFAULT_BACKEND_TTS_MODEL,
-        )
-        device = os.environ.get(
-            "HIGGS_AUDIO_DEVICE",
-            "cuda" if torch.cuda.is_available() else "cpu",
-        )
-        torch_dtype = torch.bfloat16 if device.startswith("cuda") else torch.float32
-
-        processor = AutoProcessor.from_pretrained(model_name)
-        model = HiggsAudioV2ForConditionalGeneration.from_pretrained(
-            model_name,
-            torch_dtype=torch_dtype,
-        ).to(device)
-        model.eval()
-        engine = EngineBundle(model=model, processor=processor)
+        engine = load_engine_from_environment()
     except Exception as exc:
+        LOGGER.exception("Higgs engine load failed.")
         with _ENGINE_COND:
             _ENGINE_LOADING = False
             _ENGINE_ERROR = exc
@@ -194,34 +234,9 @@ def preload_engine_async() -> None:
         global _ENGINE_LOADING
 
         try:
-            import torch
-            from transformers import (
-                AutoProcessor,
-                HiggsAudioV2ForConditionalGeneration,
-            )
-
-            model_name = os.environ.get(
-                "HIGGS_AUDIO_MODEL",
-                DEFAULT_BACKEND_TTS_MODEL,
-            )
-            device = os.environ.get(
-                "HIGGS_AUDIO_DEVICE",
-                "cuda" if torch.cuda.is_available() else "cpu",
-            )
-            torch_dtype = (
-                torch.bfloat16
-                if device.startswith("cuda")
-                else torch.float32
-            )
-
-            processor = AutoProcessor.from_pretrained(model_name)
-            model = HiggsAudioV2ForConditionalGeneration.from_pretrained(
-                model_name,
-                torch_dtype=torch_dtype,
-            ).to(device)
-            model.eval()
-            engine = EngineBundle(model=model, processor=processor)
+            engine = load_engine_from_environment()
         except Exception as exc:
+            LOGGER.exception("Higgs engine preload failed.")
             with _ENGINE_COND:
                 _ENGINE_LOADING = False
                 _ENGINE_ERROR = exc
