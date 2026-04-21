@@ -43,7 +43,10 @@ class TTSServiceTests(unittest.TestCase):
         fake_torch.cuda.is_available.return_value = False
         fake_tts = Mock()
         fake_tts_cls = Mock(return_value=fake_tts)
+        fake_base_dataset_config = type("FakeBaseDatasetConfig", (), {})
         fake_config = type("FakeXttsConfig", (), {})
+        fake_args = type("FakeXttsArgs", (), {})
+        fake_audio_config = type("FakeXttsAudioConfig", (), {})
 
         with (
             patch.dict(
@@ -51,13 +54,27 @@ class TTSServiceTests(unittest.TestCase):
                 {
                     "torch": fake_torch,
                     "TTS.api": Mock(TTS=fake_tts_cls),
+                    "TTS.tts.configs.shared_configs": Mock(
+                        BaseDatasetConfig=fake_base_dataset_config
+                    ),
                     "TTS.tts.configs.xtts_config": Mock(XttsConfig=fake_config),
+                    "TTS.tts.models.xtts": Mock(
+                        XttsArgs=fake_args,
+                        XttsAudioConfig=fake_audio_config,
+                    ),
                 },
             ),
         ):
             bundle = tts_app.load_engine_from_environment()
 
-        fake_torch.serialization.add_safe_globals.assert_called_once_with([fake_config])
+        fake_torch.serialization.add_safe_globals.assert_called_once_with(
+            [
+                fake_base_dataset_config,
+                fake_args,
+                fake_audio_config,
+                fake_config,
+            ]
+        )
         fake_tts_cls.assert_called_once_with(
             model_name=DEFAULT_BACKEND_TTS_MODEL,
             progress_bar=False,

@@ -84,9 +84,18 @@ def is_cuda_oom(exc: BaseException) -> bool:
 def allow_coqui_xtts_checkpoint_globals() -> None:
     """Allow PyTorch 2.6+ to load trusted Coqui XTTS checkpoint config objects."""
     import torch
+    from TTS.tts.configs.shared_configs import BaseDatasetConfig
     from TTS.tts.configs.xtts_config import XttsConfig
+    from TTS.tts.models.xtts import XttsArgs, XttsAudioConfig
 
-    torch.serialization.add_safe_globals([XttsConfig])
+    torch.serialization.add_safe_globals(
+        [
+            BaseDatasetConfig,
+            XttsArgs,
+            XttsAudioConfig,
+            XttsConfig,
+        ]
+    )
 
 
 def load_engine_from_environment() -> EngineBundle:
