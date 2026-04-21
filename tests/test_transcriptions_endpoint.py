@@ -220,6 +220,11 @@ class TranscriptionsEndpointTests(unittest.TestCase):
                         "alignment should not run for simple responses"
                     ),
                 ),
+                patch.object(
+                    whisper_app,
+                    "unload_whisperx_runtime",
+                    return_value=None,
+                ) as unload_runtime,
             ):
                 payload = asyncio.run(
                     whisper_app.transcribe(
@@ -237,6 +242,48 @@ class TranscriptionsEndpointTests(unittest.TestCase):
         self.assertIn("/v1/audio/transcriptions", route_paths)
         self.assertNotIn("/v1/audio/transcriptions/whisperx", route_paths)
         self.assertEqual(payload_data, {"text": "hello world"})
+        unload_runtime.assert_called_once()
+
+    def test_transcription_can_keep_runtime_loaded_when_configured(self):
+        stack, _ = self.build_context({"WHISPERX_UNLOAD_AFTER_REQUEST": "0"})
+        with stack:
+            with patch.object(
+                whisper_app,
+                "unload_whisperx_runtime",
+                return_value=None,
+            ) as unload_runtime:
+                payload = asyncio.run(
+                    whisper_app.transcribe(
+                        file=self.make_upload(),
+                        model_name="whisper-1",
+                        language=None,
+                        advanced=False,
+                        diarize=False,
+                        min_speakers=None,
+                        max_speakers=None,
+                    )
+                )
+
+        self.assertEqual(payload.model_dump(), {"text": "hello world"})
+        unload_runtime.assert_not_called()
+
+    def test_unload_whisperx_runtime_clears_model_and_asset_caches(self):
+        whisper_app.whisperx_models["whisper-1"] = object()
+        whisper_app.whisperx_align_models["en"] = (object(), {})
+        whisper_app.whisperx_diarization_pipeline = object()
+        with whisper_app.runtime_asset_lock:
+            whisper_app.runtime_asset_states["asr:turbo"] = "ready"
+            whisper_app.runtime_asset_errors["asr:turbo"] = "boom"
+            whisper_app.runtime_asset_events["asr:turbo"] = threading.Event()
+
+        whisper_app.unload_whisperx_runtime()
+
+        self.assertEqual(whisper_app.whisperx_models, {})
+        self.assertEqual(whisper_app.whisperx_align_models, {})
+        self.assertIsNone(whisper_app.whisperx_diarization_pipeline)
+        self.assertEqual(whisper_app.runtime_asset_states, {})
+        self.assertEqual(whisper_app.runtime_asset_errors, {})
+        self.assertEqual(whisper_app.runtime_asset_events, {})
 
     def test_advanced_transcription_keeps_alignment_without_diarization(self):
         stack, route_paths = self.build_context({})

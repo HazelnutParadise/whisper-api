@@ -1,4 +1,5 @@
 import importlib
+import gc
 import logging
 import os
 import shutil
@@ -44,6 +45,7 @@ runtime_asset_states: dict[str, str] = {}
 runtime_asset_errors: dict[str, str] = {}
 runtime_asset_events: dict[str, threading.Event] = {}
 runtime_asset_lock = threading.Lock()
+asr_inference_lock = threading.Lock()
 
 
 def is_ffmpeg_available() -> bool:
@@ -132,6 +134,41 @@ def get_diarization_pipeline() -> Any:
     if whisperx_diarization_pipeline is None:
         whisperx_diarization_pipeline = load_diarization_pipeline()
     return whisperx_diarization_pipeline
+
+
+def env_flag(name: str, default: bool = False) -> bool:
+    """Read a boolean environment flag."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def unload_whisperx_runtime() -> None:
+    """Drop cached WhisperX runtime assets and release CUDA memory."""
+    global whisperx_diarization_pipeline
+
+    logger.info("Unloading WhisperX runtime assets after transcription...")
+    whisperx_models.clear()
+    whisperx_align_models.clear()
+    whisperx_diarization_pipeline = None
+
+    with runtime_asset_lock:
+        runtime_asset_states.clear()
+        runtime_asset_errors.clear()
+        runtime_asset_events.clear()
+
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+    except Exception:
+        logger.exception("Failed to fully clear CUDA cache after WhisperX unload.")
+
+    logger.info("WhisperX runtime assets unloaded.")
 
 
 def _mark_runtime_asset_ready(resource: str) -> None:
@@ -949,43 +986,46 @@ async def transcribe(
     """Transcribe audio using WhisperX behind the legacy endpoint."""
     get_whisperx_backend_model_name(model_name)
     effective_diarize = advanced and diarize
-    ensure_runtime_assets_ready(
-        model_name=model_name,
-        language=language if advanced else None,
-        diarize=effective_diarize,
-    )
-
     filepath = save_upload_file(file)
 
-    try:
-        if advanced:
-            if should_use_chunked_transcription(filepath):
-                response = build_chunked_whisperx_response(
-                    filepath=filepath,
-                    model_name=model_name,
-                    language=language,
-                    diarize=effective_diarize,
-                    min_speakers=min_speakers,
-                    max_speakers=max_speakers,
-                )
-            else:
-                response = build_whisperx_response(
-                    filepath=filepath,
-                    model_name=model_name,
-                    language=language,
-                    diarize=effective_diarize,
-                    min_speakers=min_speakers,
-                    max_speakers=max_speakers,
-                )
-        else:
-            response = build_simple_transcription_response(
-                filepath=filepath,
+    with asr_inference_lock:
+        try:
+            ensure_runtime_assets_ready(
                 model_name=model_name,
-                language=language,
+                language=language if advanced else None,
+                diarize=effective_diarize,
             )
-        return response
-    finally:
-        cleanup_file(filepath)
+
+            if advanced:
+                if should_use_chunked_transcription(filepath):
+                    response = build_chunked_whisperx_response(
+                        filepath=filepath,
+                        model_name=model_name,
+                        language=language,
+                        diarize=effective_diarize,
+                        min_speakers=min_speakers,
+                        max_speakers=max_speakers,
+                    )
+                else:
+                    response = build_whisperx_response(
+                        filepath=filepath,
+                        model_name=model_name,
+                        language=language,
+                        diarize=effective_diarize,
+                        min_speakers=min_speakers,
+                        max_speakers=max_speakers,
+                    )
+            else:
+                response = build_simple_transcription_response(
+                    filepath=filepath,
+                    model_name=model_name,
+                    language=language,
+                )
+            return response
+        finally:
+            cleanup_file(filepath)
+            if env_flag("WHISPERX_UNLOAD_AFTER_REQUEST", default=True):
+                unload_whisperx_runtime()
 
 
 if __name__ == "__main__":
