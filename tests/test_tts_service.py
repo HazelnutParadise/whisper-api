@@ -36,6 +36,7 @@ class TTSServiceTests(unittest.TestCase):
         requirements = Path("tts_service/requirements.txt").read_text()
         self.assertIn("TTS", requirements)
         self.assertIn("soundfile", requirements)
+        self.assertIn("transformers==4.44.2", requirements)
 
     def test_speech_endpoint_returns_pcm_audio_from_coqui_engine(self):
         fake_model = FakeCoquiModel()
