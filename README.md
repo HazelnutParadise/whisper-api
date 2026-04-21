@@ -145,6 +145,8 @@ HIGGS_AUDIO_DEVICE_MAP=auto
 HIGGS_PRELOAD_ON_STARTUP=0
 HIGGS_HEALTH_REQUIRE_MODEL=0
 HIGGS_UNLOAD_AFTER_REQUEST=1
+HIGGS_EXIT_AFTER_REQUEST=1
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 ```
 
 Start all three services:
@@ -166,6 +168,13 @@ By default `WHISPERX_UNLOAD_AFTER_REQUEST=1` and
 STT/TTS request. This keeps GPU memory available when alternating between ASR
 and TTS on single-GPU hosts. Set either value to `0` only if you prefer faster
 repeated requests for that service and have enough VRAM for both models.
+
+By default `HIGGS_EXIT_AFTER_REQUEST=1` also exits the TTS worker after the
+HTTP response is sent. Docker restarts it immediately, and because Higgs loads
+lazily, the restarted service does not reload the model until the next TTS
+request. This is more reliable than CUDA cache cleanup alone because it fully
+destroys the TTS process CUDA context before a later STT request tries to load
+WhisperX on the same GPU.
 
 By default `HIGGS_AUDIO_DEVICE_MAP=auto` follows the upstream Transformers
 Higgs Audio loading path. This lets Transformers/Accelerate avoid the older

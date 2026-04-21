@@ -15,6 +15,7 @@ import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 
 DEFAULT_BACKEND_TTS_MODEL = "eustlb/higgs-audio-v2-generation-3B-base"
@@ -331,6 +332,25 @@ def unload_engine() -> None:
     LOGGER.info("Higgs engine unloaded.")
 
 
+def cleanup_request_runtime_refs(runtime_refs: dict[str, object]) -> None:
+    """Drop per-request model/tensor references before CUDA cache cleanup."""
+    runtime_refs.clear()
+    clear_cuda_cache()
+
+
+def exit_process_after_response() -> None:
+    """Exit after the response is sent so Docker can release CUDA context."""
+    LOGGER.info("Exiting TTS worker after request to release CUDA context.")
+    os._exit(0)
+
+
+def response_background_task() -> BackgroundTask | None:
+    """Return a post-response task for aggressive CUDA context release."""
+    if env_flag("HIGGS_EXIT_AFTER_REQUEST", default=False):
+        return BackgroundTask(exit_process_after_response)
+    return None
+
+
 @app.on_event("startup")
 def startup_preload() -> None:
     """Optionally start model preload without blocking Uvicorn startup."""
@@ -493,6 +513,7 @@ def create_speech(payload: SpeechRequest):
         )
 
     should_unload_after_request = env_flag("HIGGS_UNLOAD_AFTER_REQUEST", default=True)
+    runtime_refs: dict[str, object] = {}
 
     try:
         with _INFERENCE_LOCK:
@@ -501,43 +522,55 @@ def create_speech(payload: SpeechRequest):
                 payload.voice,
                 payload.instructions,
             )
-            bundle = get_engine()
+            runtime_refs["bundle"] = get_engine()
             temperature = float(
                 os.environ.get("HIGGS_AUDIO_TEMPERATURE", DEFAULT_TEMPERATURE)
             )
-            inputs = bundle.processor.apply_chat_template(
+            runtime_refs["inputs"] = runtime_refs["bundle"].processor.apply_chat_template(
                 conversation,
                 add_generation_prompt=True,
                 tokenize=True,
                 return_dict=True,
                 sampling_rate=DEFAULT_SAMPLING_RATE,
                 return_tensors="pt",
-            ).to(bundle.model.device)
-            outputs = bundle.model.generate(
-                **inputs,
-                max_new_tokens=int(
-                    os.environ.get(
-                        "HIGGS_AUDIO_MAX_NEW_TOKENS",
-                        DEFAULT_MAX_NEW_TOKENS,
-                    )
-                ),
-                do_sample=temperature > 0,
-                temperature=temperature,
-                top_p=float(os.environ.get("HIGGS_AUDIO_TOP_P", DEFAULT_TOP_P)),
-                top_k=int(os.environ.get("HIGGS_AUDIO_TOP_K", DEFAULT_TOP_K)),
+            ).to(runtime_refs["bundle"].model.device)
+
+            import torch
+
+            with torch.inference_mode():
+                runtime_refs["outputs"] = runtime_refs["bundle"].model.generate(
+                    **runtime_refs["inputs"],
+                    max_new_tokens=int(
+                        os.environ.get(
+                            "HIGGS_AUDIO_MAX_NEW_TOKENS",
+                            DEFAULT_MAX_NEW_TOKENS,
+                        )
+                    ),
+                    do_sample=temperature > 0,
+                    temperature=temperature,
+                    top_p=float(os.environ.get("HIGGS_AUDIO_TOP_P", DEFAULT_TOP_P)),
+                    top_k=int(os.environ.get("HIGGS_AUDIO_TOP_K", DEFAULT_TOP_K)),
+                )
+            runtime_refs["decoded"] = runtime_refs["bundle"].processor.batch_decode(
+                prepare_outputs_for_decode(
+                    runtime_refs["outputs"],
+                    runtime_refs["bundle"].processor,
+                )
             )
-            decoded = bundle.processor.batch_decode(
-                prepare_outputs_for_decode(outputs, bundle.processor)
+            pcm_bytes = decoded_audio_to_pcm16le(
+                runtime_refs["decoded"],
+                runtime_refs["bundle"].processor,
             )
-            pcm_bytes = decoded_audio_to_pcm16le(decoded, bundle.processor)
             if should_unload_after_request:
+                cleanup_request_runtime_refs(runtime_refs)
                 unload_engine()
     except HTTPException:
+        cleanup_request_runtime_refs(runtime_refs)
         unload_engine()
         raise
     except Exception as exc:
+        cleanup_request_runtime_refs(runtime_refs)
         unload_engine()
-        clear_cuda_cache()
         if is_cuda_oom(exc):
             LOGGER.exception("Higgs speech generation failed because CUDA memory is exhausted.")
             raise HTTPException(
@@ -556,5 +589,13 @@ def create_speech(payload: SpeechRequest):
         ) from exc
 
     if payload.stream:
-        return StreamingResponse(iter([pcm_bytes]), media_type="audio/pcm")
-    return Response(content=pcm_bytes, media_type="audio/pcm")
+        return StreamingResponse(
+            iter([pcm_bytes]),
+            media_type="audio/pcm",
+            background=response_background_task(),
+        )
+    return Response(
+        content=pcm_bytes,
+        media_type="audio/pcm",
+        background=response_background_task(),
+    )

@@ -16,6 +16,7 @@ from tts_service.app import (
     OPENAI_VOICE_ALIASES,
     PUBLIC_BACKEND_TTS_MODEL,
     app,
+    cleanup_request_runtime_refs,
     prepare_outputs_for_decode,
 )
 
@@ -152,6 +153,43 @@ class TTSServiceTests(unittest.TestCase):
 
         self.assertIs(prepared, outputs)
         self.assertEqual(outputs.target_device.type, "cpu")
+
+    def test_cleanup_request_runtime_refs_drops_per_request_references(self):
+        runtime_refs = {"bundle": object(), "inputs": object()}
+
+        with patch("tts_service.app.clear_cuda_cache", autospec=True) as clear_cuda_cache:
+            cleanup_request_runtime_refs(runtime_refs)
+
+        self.assertEqual(runtime_refs, {})
+        clear_cuda_cache.assert_called_once()
+
+    def test_speech_endpoint_can_exit_after_response_when_configured(self):
+        fake_outputs = {"audio_tokens": [1, 2, 3]}
+        fake_engine = EngineBundle(
+            model=FakeModel(fake_outputs),
+            processor=FakeProcessor(decoded=["decoded-audio"]),
+        )
+
+        with (
+            patch.dict("os.environ", {"HIGGS_EXIT_AFTER_REQUEST": "1"}),
+            patch("tts_service.app.preload_engine_async", autospec=True),
+            patch("tts_service.app.get_engine", return_value=fake_engine),
+            patch("tts_service.app.unload_engine", autospec=True),
+            patch("tts_service.app.os._exit", autospec=True) as exit_process,
+        ):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/v1/audio/speech",
+                    json={
+                        "model": PUBLIC_BACKEND_TTS_MODEL,
+                        "input": "hello world",
+                        "voice": "alloy",
+                        "response_format": "pcm",
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200)
+        exit_process.assert_called_once_with(0)
 
     def test_speech_endpoint_reports_cuda_oom_as_service_unavailable(self):
         with (
