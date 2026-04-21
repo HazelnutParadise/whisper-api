@@ -123,6 +123,14 @@ class SpeechRequest(BaseModel):
     stream_format: str | None = None
 
 
+def env_flag(name: str, default: bool = False) -> bool:
+    """Read a boolean environment flag."""
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def load_engine_from_environment() -> EngineBundle:
     """Load the Higgs processor/model pair with phase-level logging."""
     import torch
@@ -258,8 +266,11 @@ def preload_engine_async() -> None:
 
 @app.on_event("startup")
 def startup_preload() -> None:
-    """Start model preload without blocking Uvicorn startup."""
-    preload_engine_async()
+    """Optionally start model preload without blocking Uvicorn startup."""
+    if env_flag("HIGGS_PRELOAD_ON_STARTUP", default=False):
+        preload_engine_async()
+    else:
+        LOGGER.info("Higgs preload disabled; model will load on first TTS request.")
 
 
 def resolve_voice_name(voice: str) -> str:
@@ -365,22 +376,28 @@ def healthz() -> dict[str, str]:
     """Report service readiness without triggering blocking model loads."""
     with _ENGINE_COND:
         if _ENGINE is not None:
-            return {"status": "ok"}
+            return {"status": "ok", "engine": "ready"}
         if _ENGINE_LOADING:
-            raise HTTPException(
-                status_code=503,
-                detail="Higgs engine is still loading.",
-            )
+            if env_flag("HIGGS_HEALTH_REQUIRE_MODEL", default=False):
+                raise HTTPException(
+                    status_code=503,
+                    detail="Higgs engine is still loading.",
+                )
+            return {"status": "ok", "engine": "loading"}
         if _ENGINE_ERROR is not None:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Higgs engine preload failed: {_ENGINE_ERROR}",
-            )
+            if env_flag("HIGGS_HEALTH_REQUIRE_MODEL", default=False):
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Higgs engine preload failed: {_ENGINE_ERROR}",
+                )
+            return {"status": "ok", "engine": "failed"}
 
-    raise HTTPException(
-        status_code=503,
-        detail="Higgs engine has not started loading yet.",
-    )
+    if env_flag("HIGGS_HEALTH_REQUIRE_MODEL", default=False):
+        raise HTTPException(
+            status_code=503,
+            detail="Higgs engine has not started loading yet.",
+        )
+    return {"status": "ok", "engine": "not_loaded"}
 
 
 @app.post("/v1/audio/speech")

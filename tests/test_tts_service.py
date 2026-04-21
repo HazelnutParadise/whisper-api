@@ -1,5 +1,6 @@
 import unittest
 import wave
+from unittest.mock import Mock
 from unittest.mock import patch
 
 import numpy as np
@@ -122,6 +123,7 @@ class TTSServiceTests(unittest.TestCase):
 
     def test_healthz_returns_503_while_engine_is_loading(self):
         with (
+            patch.dict("os.environ", {"HIGGS_HEALTH_REQUIRE_MODEL": "1"}),
             patch("tts_service.app.preload_engine_async", autospec=True),
             patch.object(tts_app, "_ENGINE", None),
             patch.object(tts_app, "_ENGINE_LOADING", True, create=True),
@@ -139,6 +141,7 @@ class TTSServiceTests(unittest.TestCase):
 
     def test_healthz_returns_500_when_engine_preload_failed(self):
         with (
+            patch.dict("os.environ", {"HIGGS_HEALTH_REQUIRE_MODEL": "1"}),
             patch("tts_service.app.preload_engine_async", autospec=True),
             patch.object(tts_app, "_ENGINE", None),
             patch.object(tts_app, "_ENGINE_LOADING", False, create=True),
@@ -158,6 +161,29 @@ class TTSServiceTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 500)
         self.assertIn("boom", response.json()["detail"])
+
+    def test_healthz_is_ok_without_loaded_engine_by_default(self):
+        with (
+            patch("tts_service.app.preload_engine_async", autospec=True),
+            patch.object(tts_app, "_ENGINE", None),
+            patch.object(tts_app, "_ENGINE_LOADING", False, create=True),
+            patch.object(tts_app, "_ENGINE_ERROR", None, create=True),
+        ):
+            with TestClient(app) as client:
+                response = client.get("/healthz")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "ok")
+        self.assertEqual(response.json()["engine"], "not_loaded")
+
+    def test_startup_preload_is_disabled_by_default(self):
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("tts_service.app.preload_engine_async", Mock()) as preload,
+        ):
+            tts_app.startup_preload()
+
+        preload.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -135,9 +135,13 @@ Create `.env` from `.env.example` and set at least:
 HF_TOKEN=hf_xxx
 HF_HUB_DISABLE_XET=1
 CUDA_VISIBLE_DEVICES=0
+ASR_CUDA_VISIBLE_DEVICES=0
+HIGGS_CUDA_VISIBLE_DEVICES=0
 ASR_MODELS_PATH=/mnt/ssd1/whisper/models
 HIGGS_CACHE_PATH=/mnt/ssd1/whisper/higgs-cache
 HIGGS_AUDIO_MODEL=eustlb/higgs-audio-v2-generation-3B-base
+HIGGS_PRELOAD_ON_STARTUP=0
+HIGGS_HEALTH_REQUIRE_MODEL=0
 ```
 
 Start all three services:
@@ -148,7 +152,16 @@ docker compose up --build
 ```
 
 The native Higgs backend exposes `/healthz`, and compose waits for that
-endpoint before starting the public gateway.
+endpoint before starting the public gateway. By default `/healthz` only checks
+that the HTTP service is alive; the Higgs model is loaded lazily on the first
+TTS request so ASR does not lose GPU memory at startup. Set
+`HIGGS_PRELOAD_ON_STARTUP=1` and `HIGGS_HEALTH_REQUIRE_MODEL=1` only when you
+want Docker health to mean "TTS model already loaded".
+
+On single-GPU hosts, keep `ASR_CUDA_VISIBLE_DEVICES` and
+`HIGGS_CUDA_VISIBLE_DEVICES` on the same GPU only if there is enough VRAM for
+both WhisperX and Higgs. On multi-GPU hosts, split them, for example
+`ASR_CUDA_VISIBLE_DEVICES=0` and `HIGGS_CUDA_VISIBLE_DEVICES=1`.
 
 Public gateway endpoint:
 
@@ -232,6 +245,7 @@ docker compose logs higgs-tts
 Common causes:
 
 - the native Higgs model is still downloading or loading into GPU memory
+- ASR and TTS are both trying to load large models onto the same GPU
 - the Hugging Face `hf-xet` download path is failing TLS handshakes in the container
 - the container exited before the native `/healthz` endpoint became ready
 

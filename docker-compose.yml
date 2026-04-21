@@ -31,7 +31,7 @@ services:
       TRANSFORMERS_CACHE: /app/models/hf-cache/transformers
       WHISPERX_DEVICE: ${WHISPERX_DEVICE:-cuda}
       WHISPERX_COMPUTE_TYPE: ${WHISPERX_COMPUTE_TYPE:-float16}
-      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+      CUDA_VISIBLE_DEVICES: ${ASR_CUDA_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-0}}
     gpus: all
     volumes:
       - ${ASR_MODELS_PATH:-/mnt/ssd1/whisper/models}:/app/models
@@ -48,7 +48,9 @@ services:
       HF_TOKEN: ${HF_TOKEN:-}
       HF_HUB_DISABLE_XET: ${HF_HUB_DISABLE_XET:-1}
       HIGGS_AUDIO_MODEL: ${HIGGS_AUDIO_MODEL:-eustlb/higgs-audio-v2-generation-3B-base}
-      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+      HIGGS_PRELOAD_ON_STARTUP: ${HIGGS_PRELOAD_ON_STARTUP:-0}
+      HIGGS_HEALTH_REQUIRE_MODEL: ${HIGGS_HEALTH_REQUIRE_MODEL:-0}
+      CUDA_VISIBLE_DEVICES: ${HIGGS_CUDA_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-0}}
     gpus: all
     volumes:
       - ${HIGGS_CACHE_PATH:-/mnt/ssd1/whisper/higgs-cache}:/root/.cache/huggingface
