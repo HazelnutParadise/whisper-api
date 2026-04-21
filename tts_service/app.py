@@ -92,6 +92,7 @@ SUPPORTED_TTS_MODELS = {
     "tts-1",
     "tts-1-hd",
     PUBLIC_BACKEND_TTS_MODEL,
+    DEFAULT_BACKEND_TTS_MODEL,
 }
 
 _ENGINE = None

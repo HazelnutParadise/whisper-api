@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 import tts_service.app as tts_app
 from tts_service.app import (
+    DEFAULT_BACKEND_TTS_MODEL,
     DEFAULT_SAMPLING_RATE,
     EngineBundle,
     OPENAI_VOICE_ALIASES,
@@ -117,6 +118,31 @@ class TTSServiceTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         unload_engine.assert_not_called()
+
+    def test_speech_endpoint_accepts_internal_backend_model_from_gateway(self):
+        fake_outputs = {"audio_tokens": [1, 2, 3]}
+        fake_engine = EngineBundle(
+            model=FakeModel(fake_outputs),
+            processor=FakeProcessor(decoded=["decoded-audio"]),
+        )
+
+        with (
+            patch("tts_service.app.preload_engine_async", autospec=True),
+            patch("tts_service.app.get_engine", return_value=fake_engine),
+            patch("tts_service.app.unload_engine", autospec=True),
+        ):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/v1/audio/speech",
+                    json={
+                        "model": DEFAULT_BACKEND_TTS_MODEL,
+                        "input": "hello world",
+                        "voice": "alloy",
+                        "response_format": "pcm",
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200)
 
     def test_speech_endpoint_rejects_unknown_voice(self):
         with patch("tts_service.app.preload_engine_async", autospec=True):
