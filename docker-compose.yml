@@ -25,17 +25,13 @@ services:
     container_name: whisper-asr
     environment:
       HF_TOKEN: ${HF_TOKEN:-}
-      HF_HUB_DISABLE_XET: ${HF_HUB_DISABLE_XET:-1}
       HF_HOME: /app/models/hf-cache
       HUGGINGFACE_HUB_CACHE: /app/models/hf-cache/hub
       TRANSFORMERS_CACHE: /app/models/hf-cache/transformers
-      WHISPERX_DEVICE: ${WHISPERX_DEVICE:-cuda}
-      WHISPERX_COMPUTE_TYPE: ${WHISPERX_COMPUTE_TYPE:-float16}
-      WHISPERX_UNLOAD_AFTER_REQUEST: ${WHISPERX_UNLOAD_AFTER_REQUEST:-1}
-      CUDA_VISIBLE_DEVICES: ${ASR_CUDA_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-0}}
+      HF_HUB_DISABLE_XET: "1"
     gpus: all
     volumes:
-      - ${ASR_MODELS_PATH:-/mnt/ssd1/whisper/models}:/app/models
+      - /mnt/ssd1/whisper/models:/app/models
     networks:
       - speech-net
     restart: unless-stopped
@@ -46,18 +42,13 @@ services:
       dockerfile: tts_service/Dockerfile
     container_name: whisper-coqui-tts
     environment:
-      HF_HUB_DISABLE_XET: ${HF_HUB_DISABLE_XET:-1}
-      COQUI_TTS_MODEL: ${COQUI_TTS_MODEL:-tts_models/en/ljspeech/vits}
-      COQUI_TTS_DEVICE: ${COQUI_TTS_DEVICE:-cuda}
-      COQUI_TTS_PRELOAD_ON_STARTUP: ${COQUI_TTS_PRELOAD_ON_STARTUP:-0}
-      COQUI_TTS_HEALTH_REQUIRE_MODEL: ${COQUI_TTS_HEALTH_REQUIRE_MODEL:-0}
-      COQUI_TTS_UNLOAD_AFTER_REQUEST: ${COQUI_TTS_UNLOAD_AFTER_REQUEST:-1}
-      COQUI_TTS_EXIT_AFTER_REQUEST: ${COQUI_TTS_EXIT_AFTER_REQUEST:-1}
-      PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
-      CUDA_VISIBLE_DEVICES: ${COQUI_CUDA_VISIBLE_DEVICES:-${CUDA_VISIBLE_DEVICES:-0}}
+      TTS_HOME: /root/.local/share/tts
+      HF_HOME: /root/.local/share/tts/hf-cache
+      HUGGINGFACE_HUB_CACHE: /root/.local/share/tts/hf-cache/hub
+      TRANSFORMERS_CACHE: /root/.local/share/tts/hf-cache/transformers
     gpus: all
     volumes:
-      - ${COQUI_CACHE_PATH:-/mnt/ssd1/whisper/coqui-cache}:/root/.local/share/tts
+      - /mnt/ssd1/whisper/coqui-cache:/root/.local/share/tts
     healthcheck:
       test:
         - CMD

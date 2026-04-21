@@ -75,10 +75,9 @@ Supported `response_format` values:
 
 `stream_format` currently supports only `audio`. `sse` is rejected with `400`.
 
-The `voice` field is accepted for OpenAI compatibility. The default Coqui model
-is a single-speaker model, so voice changes require switching to a multi-speaker
-or voice-cloning Coqui model and setting `COQUI_TTS_SPEAKER`,
-`COQUI_TTS_LANGUAGE`, or `COQUI_TTS_SPEAKER_WAV`.
+The `voice` field is accepted for OpenAI compatibility. If the selected Coqui
+model exposes built-in speaker names, the backend uses a matching `voice`;
+otherwise it falls back to the first built-in speaker.
 
 ## Coqui TTS Notes
 
@@ -88,36 +87,33 @@ previous Higgs Audio implementation.
 Default backend model:
 
 ```text
-tts_models/en/ljspeech/vits
+tts_models/multilingual/multi-dataset/xtts_v2
 ```
 
 The public API does not expose backend repository/model names directly. The
 gateway maps `tts-1`, `tts-1-hd`, and `coqui-tts` to the configured Coqui model.
+
+The default model is XTTS v2, a multilingual Coqui model. The backend keeps the
+deployment simple: language is fixed to `zh-cn`, the model loads lazily on first
+request, and the TTS worker exits after each response so Docker releases its CUDA
+context.
 
 Coqui TTS package support is Python `>=3.9,<3.12`, so the Docker TTS service uses
 the Python 3.11 PyTorch CUDA runtime image.
 
 ## Docker Compose
 
-Create `.env` from `.env.example` and set at least:
+Create `.env` from `.env.example` only if you need a Hugging Face token:
 
 ```bash
 HF_TOKEN=hf_xxx
-HF_HUB_DISABLE_XET=1
-CUDA_VISIBLE_DEVICES=0
-ASR_CUDA_VISIBLE_DEVICES=0
-COQUI_CUDA_VISIBLE_DEVICES=0
-WHISPERX_UNLOAD_AFTER_REQUEST=1
-ASR_MODELS_PATH=/mnt/ssd1/whisper/models
-COQUI_CACHE_PATH=/mnt/ssd1/whisper/coqui-cache
-COQUI_TTS_MODEL=tts_models/en/ljspeech/vits
-COQUI_TTS_DEVICE=cuda
-COQUI_TTS_PRELOAD_ON_STARTUP=0
-COQUI_TTS_HEALTH_REQUIRE_MODEL=0
-COQUI_TTS_UNLOAD_AFTER_REQUEST=1
-COQUI_TTS_EXIT_AFTER_REQUEST=1
-PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 ```
+
+Model caches are fixed inside the images and backed by the mounted volumes:
+
+- ASR Hugging Face cache: `/app/models/hf-cache` via `/mnt/ssd1/whisper/models:/app/models`
+- Coqui cache: `/root/.local/share/tts` via `/mnt/ssd1/whisper/coqui-cache:/root/.local/share/tts`
+- TTS Hugging Face cache: `/root/.local/share/tts/hf-cache`, under the same Coqui cache mount
 
 Start all three services:
 
@@ -127,16 +123,12 @@ docker compose up --build
 ```
 
 The Coqui backend exposes `/healthz`, and compose waits for that endpoint before
-starting the public gateway. By default `/healthz` only checks that the HTTP
-service is alive; the Coqui model is loaded lazily on the first TTS request. Set
-`COQUI_TTS_PRELOAD_ON_STARTUP=1` and `COQUI_TTS_HEALTH_REQUIRE_MODEL=1` only
-when Docker health should mean "TTS model already loaded".
+starting the public gateway. `/healthz` only checks that the HTTP service is
+alive; the Coqui model is loaded lazily on the first TTS request.
 
-By default `WHISPERX_UNLOAD_AFTER_REQUEST=1` and
-`COQUI_TTS_UNLOAD_AFTER_REQUEST=1` unload models and clear CUDA cache after each
-STT/TTS request. `COQUI_TTS_EXIT_AFTER_REQUEST=1` also exits the TTS worker
-after the HTTP response is sent so Docker can fully release the TTS CUDA context
-before a later STT request loads WhisperX on the same GPU.
+The ASR backend unloads WhisperX after each request. The TTS backend unloads
+Coqui and exits its worker after each response so Docker fully releases the TTS
+CUDA context before a later STT request loads WhisperX on the same GPU.
 
 Public gateway endpoint:
 
@@ -216,11 +208,4 @@ Common causes:
 - the Coqui model is still downloading or loading into GPU memory
 - ASR and TTS are both trying to load large models onto the same GPU
 - the GPU still has orphaned model processes from previous containers
-- the selected Coqui model requires a `speaker`, `language`, or `speaker_wav`
-
-For a multi-GPU host, split ASR and TTS:
-
-```bash
-ASR_CUDA_VISIBLE_DEVICES=0
-COQUI_CUDA_VISIBLE_DEVICES=1
-```
+- the selected Coqui model requires a speaker but exposes no built-in speaker names

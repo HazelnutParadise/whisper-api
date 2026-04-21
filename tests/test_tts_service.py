@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 import tts_service.app as tts_app
 from tts_service.app import (
     DEFAULT_BACKEND_TTS_MODEL,
+    DEFAULT_COQUI_LANGUAGE,
     EngineBundle,
     PUBLIC_BACKEND_TTS_MODEL,
     app,
@@ -101,30 +102,6 @@ class TTSServiceTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn(PUBLIC_BACKEND_TTS_MODEL, response.json()["detail"])
 
-    def test_speech_endpoint_can_keep_engine_loaded_when_configured(self):
-        fake_engine = EngineBundle(model=FakeCoquiModel())
-
-        with (
-            patch.dict("os.environ", {"COQUI_TTS_UNLOAD_AFTER_REQUEST": "0"}),
-            patch("tts_service.app.preload_engine_async", autospec=True),
-            patch("tts_service.app.get_engine", return_value=fake_engine),
-            patch("tts_service.app.wav_file_to_pcm16le", return_value=b"\x00\x01"),
-            patch("tts_service.app.unload_engine", autospec=True) as unload_engine,
-        ):
-            with TestClient(app) as client:
-                response = client.post(
-                    "/v1/audio/speech",
-                    json={
-                        "model": PUBLIC_BACKEND_TTS_MODEL,
-                        "input": "hello world",
-                        "voice": "alloy",
-                        "response_format": "pcm",
-                    },
-                )
-
-        self.assertEqual(response.status_code, 200)
-        unload_engine.assert_not_called()
-
     def test_cleanup_request_runtime_refs_drops_per_request_references(self):
         runtime_refs = {"bundle": object(), "inputs": object()}
 
@@ -134,15 +111,15 @@ class TTSServiceTests(unittest.TestCase):
         self.assertEqual(runtime_refs, {})
         clear_cuda_cache.assert_called_once()
 
-    def test_speech_endpoint_can_exit_after_response_when_configured(self):
+    def test_speech_endpoint_exits_after_response_to_release_cuda_context(self):
         fake_engine = EngineBundle(model=FakeCoquiModel())
 
         with (
-            patch.dict("os.environ", {"COQUI_TTS_EXIT_AFTER_REQUEST": "1"}),
             patch("tts_service.app.preload_engine_async", autospec=True),
             patch("tts_service.app.get_engine", return_value=fake_engine),
             patch("tts_service.app.wav_file_to_pcm16le", return_value=b"\x00\x01"),
             patch("tts_service.app.unload_engine", autospec=True),
+            patch("tts_service.app.should_exit_after_response", return_value=True),
             patch("tts_service.app.os._exit", autospec=True) as exit_process,
         ):
             with TestClient(app) as client:
@@ -185,27 +162,48 @@ class TTSServiceTests(unittest.TestCase):
         unload_engine.assert_called_once()
         self.assertGreaterEqual(clear_cuda_cache.call_count, 1)
 
-    def test_coqui_kwargs_can_use_configured_speaker_and_language(self):
+    def test_coqui_kwargs_uses_default_language_and_matching_builtin_speaker(self):
+        payload = Mock()
+        payload.voice = "speaker-2"
+        model = FakeCoquiModel()
+        model.is_multi_speaker = True
+        model.speakers = ["speaker-1", "speaker-2"]
+
+        kwargs = coqui_tts_kwargs(payload, model)
+
+        self.assertEqual(kwargs["language"], DEFAULT_COQUI_LANGUAGE)
+        self.assertEqual(kwargs["speaker"], "speaker-2")
+
+    def test_coqui_kwargs_falls_back_to_first_builtin_speaker(self):
+        payload = Mock()
+        payload.voice = "alloy"
+        model = FakeCoquiModel()
+        model.is_multi_speaker = True
+        model.speakers = ["speaker-1", "speaker-2"]
+
+        kwargs = coqui_tts_kwargs(payload, model)
+
+        self.assertEqual(kwargs["speaker"], "speaker-1")
+
+    def test_coqui_kwargs_defaults_to_multilingual_language(self):
         payload = Mock()
         model = FakeCoquiModel()
+        model.is_multi_lingual = True
 
-        with patch.dict(
-            "os.environ",
-            {
-                "COQUI_TTS_LANGUAGE": "en",
-                "COQUI_TTS_SPEAKER": "speaker-1",
-                "COQUI_TTS_SPEAKER_WAV": "/voices/sample.wav",
-            },
-        ):
-            kwargs = coqui_tts_kwargs(payload, model)
+        kwargs = coqui_tts_kwargs(payload, model)
 
-        self.assertEqual(kwargs["language"], "en")
-        self.assertEqual(kwargs["speaker"], "speaker-1")
-        self.assertEqual(kwargs["speaker_wav"], "/voices/sample.wav")
+        self.assertEqual(kwargs["language"], DEFAULT_COQUI_LANGUAGE)
 
-    def test_healthz_returns_503_while_engine_is_loading(self):
+    def test_coqui_kwargs_requires_speaker_for_multispeaker_models(self):
+        payload = Mock()
+        model = FakeCoquiModel()
+        model.is_multi_speaker = True
+
+        with self.assertRaisesRegex(Exception, "requires a speaker"):
+            coqui_tts_kwargs(payload, model)
+
+    def test_healthz_reports_loading_without_blocking(self):
         with (
-            patch.dict("os.environ", {"COQUI_TTS_HEALTH_REQUIRE_MODEL": "1"}),
             patch("tts_service.app.preload_engine_async", autospec=True),
             patch.object(tts_app, "_ENGINE", None),
             patch.object(tts_app, "_ENGINE_LOADING", True, create=True),
@@ -218,12 +216,11 @@ class TTSServiceTests(unittest.TestCase):
             with TestClient(app) as client:
                 response = client.get("/healthz")
 
-        self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.json()["detail"], "Coqui TTS engine is still loading.")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["engine"], "loading")
 
-    def test_healthz_returns_500_when_engine_preload_failed(self):
+    def test_healthz_reports_failed_without_failing_container_health(self):
         with (
-            patch.dict("os.environ", {"COQUI_TTS_HEALTH_REQUIRE_MODEL": "1"}),
             patch("tts_service.app.preload_engine_async", autospec=True),
             patch.object(tts_app, "_ENGINE", None),
             patch.object(tts_app, "_ENGINE_LOADING", False, create=True),
@@ -241,8 +238,8 @@ class TTSServiceTests(unittest.TestCase):
             with TestClient(app) as client:
                 response = client.get("/healthz")
 
-        self.assertEqual(response.status_code, 500)
-        self.assertIn("boom", response.json()["detail"])
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["engine"], "failed")
 
     def test_healthz_is_ok_without_loaded_engine_by_default(self):
         with (
@@ -260,7 +257,6 @@ class TTSServiceTests(unittest.TestCase):
 
     def test_startup_preload_is_disabled_by_default(self):
         with (
-            patch.dict("os.environ", {}, clear=True),
             patch("tts_service.app.preload_engine_async", Mock()) as preload,
         ):
             tts_app.startup_preload()

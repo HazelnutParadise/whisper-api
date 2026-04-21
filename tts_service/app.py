@@ -17,9 +17,10 @@ from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
 
 
-DEFAULT_BACKEND_TTS_MODEL = "tts_models/en/ljspeech/vits"
+DEFAULT_BACKEND_TTS_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
 PUBLIC_BACKEND_TTS_MODEL = "coqui-tts"
 DEFAULT_SAMPLING_RATE = 24_000
+DEFAULT_COQUI_LANGUAGE = "zh-cn"
 
 SUPPORTED_TTS_MODELS = {
     "",
@@ -59,14 +60,6 @@ class SpeechRequest(BaseModel):
     stream_format: str | None = None
 
 
-def env_flag(name: str, default: bool = False) -> bool:
-    """Read a boolean environment flag."""
-    value = os.environ.get(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
 def clear_cuda_cache() -> None:
     """Release unreferenced CUDA allocations after failures or unloads."""
     gc.collect()
@@ -94,11 +87,8 @@ def load_engine_from_environment() -> EngineBundle:
     from TTS.api import TTS
 
     start_time = time.monotonic()
-    model_name = os.environ.get("COQUI_TTS_MODEL", DEFAULT_BACKEND_TTS_MODEL)
-    device = os.environ.get(
-        "COQUI_TTS_DEVICE",
-        "cuda" if torch.cuda.is_available() else "cpu",
-    )
+    model_name = DEFAULT_BACKEND_TTS_MODEL
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     if device.startswith("cuda") and not torch.cuda.is_available():
         LOGGER.warning("CUDA requested for Coqui TTS but unavailable; falling back to CPU.")
         device = "cpu"
@@ -217,52 +207,56 @@ def exit_process_after_response() -> None:
     os._exit(0)
 
 
+def should_exit_after_response() -> bool:
+    """Only Docker needs process exit to release the CUDA context."""
+    return os.path.exists("/.dockerenv")
+
+
 def response_background_task() -> BackgroundTask | None:
     """Return a post-response task for aggressive CUDA context release."""
-    if env_flag("COQUI_TTS_EXIT_AFTER_REQUEST", default=False):
+    if should_exit_after_response():
         return BackgroundTask(exit_process_after_response)
     return None
 
 
 @app.on_event("startup")
 def startup_preload() -> None:
-    """Optionally start model preload without blocking Uvicorn startup."""
-    if env_flag("COQUI_TTS_PRELOAD_ON_STARTUP", default=False):
-        preload_engine_async()
-    else:
-        LOGGER.info("Coqui TTS preload disabled; model will load on first request.")
+    """Keep startup cheap; the model loads on the first TTS request."""
+    LOGGER.info("Coqui TTS model will load on first request.")
 
 
 def coqui_tts_kwargs(payload: SpeechRequest, model: object) -> dict[str, object]:
     """Build optional Coqui synthesis kwargs for models that need them."""
     kwargs: dict[str, object] = {}
 
-    language = os.environ.get("COQUI_TTS_LANGUAGE")
-    if language:
-        kwargs["language"] = language
-
-    speaker = os.environ.get("COQUI_TTS_SPEAKER")
-    if speaker:
-        kwargs["speaker"] = speaker
-
-    speaker_wav = os.environ.get("COQUI_TTS_SPEAKER_WAV")
-    if speaker_wav:
-        kwargs["speaker_wav"] = speaker_wav
+    kwargs["language"] = DEFAULT_COQUI_LANGUAGE
 
     if not kwargs.get("speaker") and getattr(model, "is_multi_speaker", False):
         speakers = getattr(model, "speakers", None) or []
         if speakers:
-            kwargs["speaker"] = speakers[0]
+            kwargs["speaker"] = payload.voice if payload.voice in speakers else speakers[0]
 
     if not kwargs.get("language") and getattr(model, "is_multi_lingual", False):
         languages = getattr(model, "languages", None) or []
         if languages:
             kwargs["language"] = languages[0]
 
-    # OpenAI voices are accepted for API compatibility. Coqui voice selection is
-    # controlled through COQUI_TTS_SPEAKER / COQUI_TTS_SPEAKER_WAV when the chosen
-    # model supports it.
-    del payload
+    if getattr(model, "is_multi_speaker", False) and not (
+        kwargs.get("speaker") or kwargs.get("speaker_wav")
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "The selected Coqui model requires a speaker, but no built-in "
+                "speaker is available."
+            ),
+        )
+    if getattr(model, "is_multi_lingual", False) and not kwargs.get("language"):
+        raise HTTPException(
+            status_code=400,
+            detail="The selected Coqui model requires a language.",
+        )
+
     return kwargs
 
 
@@ -319,25 +313,10 @@ def healthz() -> dict[str, str]:
         if _ENGINE is not None:
             return {"status": "ok", "engine": "ready"}
         if _ENGINE_LOADING:
-            if env_flag("COQUI_TTS_HEALTH_REQUIRE_MODEL", default=False):
-                raise HTTPException(
-                    status_code=503,
-                    detail="Coqui TTS engine is still loading.",
-                )
             return {"status": "ok", "engine": "loading"}
         if _ENGINE_ERROR is not None:
-            if env_flag("COQUI_TTS_HEALTH_REQUIRE_MODEL", default=False):
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Coqui TTS engine preload failed: {_ENGINE_ERROR}",
-                )
             return {"status": "ok", "engine": "failed"}
 
-    if env_flag("COQUI_TTS_HEALTH_REQUIRE_MODEL", default=False):
-        raise HTTPException(
-            status_code=503,
-            detail="Coqui TTS engine has not started loading yet.",
-        )
     return {"status": "ok", "engine": "not_loaded"}
 
 
@@ -366,16 +345,14 @@ def create_speech(payload: SpeechRequest):
             detail="stream_format must be omitted or set to `audio`.",
         )
 
-    should_unload_after_request = env_flag("COQUI_TTS_UNLOAD_AFTER_REQUEST", default=True)
     runtime_refs: dict[str, object] = {}
 
     try:
         with _INFERENCE_LOCK:
             runtime_refs["bundle"] = get_engine()
             pcm_bytes = synthesize_to_pcm(payload, runtime_refs["bundle"])
-            if should_unload_after_request:
-                cleanup_request_runtime_refs(runtime_refs)
-                unload_engine()
+            cleanup_request_runtime_refs(runtime_refs)
+            unload_engine()
     except HTTPException:
         cleanup_request_runtime_refs(runtime_refs)
         unload_engine()

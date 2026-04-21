@@ -8,7 +8,7 @@ import (
 
 const (
 	DefaultSamplingRate    = 24000
-	DefaultBackendTTSModel = "tts_models/en/ljspeech/vits"
+	DefaultBackendTTSModel = "tts_models/multilingual/multi-dataset/xtts_v2"
 	PublicBackendTTSModel  = "coqui-tts"
 )
 

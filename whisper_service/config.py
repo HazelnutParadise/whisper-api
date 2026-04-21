@@ -3,8 +3,8 @@ import os
 import torch
 
 
-UPLOAD_FOLDER = "./whisper_service"
-MODELS_DOWNLOAD_ROOT = "./models"
+UPLOAD_FOLDER = "/app/whisper_service"
+MODELS_DOWNLOAD_ROOT = "/app/models"
 
 WHISPERX_BATCH_SIZE = int(os.getenv("WHISPERX_BATCH_SIZE", "16"))
 WHISPERX_CHUNK_SECONDS = int(os.getenv("WHISPERX_CHUNK_SECONDS", "600"))
