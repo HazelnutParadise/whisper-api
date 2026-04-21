@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.request
 from dataclasses import dataclass
 
 from fastapi import FastAPI, HTTPException
@@ -21,6 +22,8 @@ DEFAULT_BACKEND_TTS_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
 PUBLIC_BACKEND_TTS_MODEL = "coqui-tts"
 DEFAULT_SAMPLING_RATE = 24_000
 DEFAULT_COQUI_LANGUAGE = "zh-cn"
+DEFAULT_SPEAKER_WAV_URL = "https://huggingface.co/datasets/Narsil/asr_dummy/resolve/main/1.flac"
+DEFAULT_SPEAKER_WAV_PATH = "/root/.local/share/tts/default-speaker.flac"
 
 SUPPORTED_TTS_MODELS = {
     "",
@@ -98,12 +101,24 @@ def allow_coqui_xtts_checkpoint_globals() -> None:
     )
 
 
+def ensure_default_speaker_wav() -> str:
+    """Download the default XTTS reference voice sample into the mounted TTS cache."""
+    if os.path.exists(DEFAULT_SPEAKER_WAV_PATH):
+        return DEFAULT_SPEAKER_WAV_PATH
+
+    os.makedirs(os.path.dirname(DEFAULT_SPEAKER_WAV_PATH), exist_ok=True)
+    LOGGER.info("Downloading default Coqui speaker reference to %s", DEFAULT_SPEAKER_WAV_PATH)
+    urllib.request.urlretrieve(DEFAULT_SPEAKER_WAV_URL, DEFAULT_SPEAKER_WAV_PATH)
+    return DEFAULT_SPEAKER_WAV_PATH
+
+
 def load_engine_from_environment() -> EngineBundle:
     """Load the Coqui TTS model with phase-level logging."""
     import torch
     from TTS.api import TTS
 
     allow_coqui_xtts_checkpoint_globals()
+    ensure_default_speaker_wav()
 
     start_time = time.monotonic()
     model_name = DEFAULT_BACKEND_TTS_MODEL
@@ -248,16 +263,17 @@ def coqui_tts_kwargs(payload: SpeechRequest, model: object) -> dict[str, object]
     """Build optional Coqui synthesis kwargs for models that need them."""
     kwargs: dict[str, object] = {}
 
-    kwargs["language"] = DEFAULT_COQUI_LANGUAGE
-
     if not kwargs.get("speaker") and getattr(model, "is_multi_speaker", False):
         speakers = getattr(model, "speakers", None) or []
         if speakers:
             kwargs["speaker"] = payload.voice if payload.voice in speakers else speakers[0]
+        else:
+            kwargs["speaker_wav"] = ensure_default_speaker_wav()
 
-    if not kwargs.get("language") and getattr(model, "is_multi_lingual", False):
+    if getattr(model, "is_multi_lingual", False):
+        kwargs["language"] = DEFAULT_COQUI_LANGUAGE
         languages = getattr(model, "languages", None) or []
-        if languages:
+        if not kwargs.get("language") and languages:
             kwargs["language"] = languages[0]
 
     if getattr(model, "is_multi_speaker", False) and not (

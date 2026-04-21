@@ -93,10 +93,9 @@ tts_models/multilingual/multi-dataset/xtts_v2
 The public API does not expose backend repository/model names directly. The
 gateway maps `tts-1`, `tts-1-hd`, and `coqui-tts` to the configured Coqui model.
 
-The default model is XTTS v2, a multilingual Coqui model. The backend keeps the
-deployment simple: language is fixed to `zh-cn`, the model loads lazily on first
-request, and the TTS worker exits after each response so Docker releases its CUDA
-context.
+The default model is XTTS v2. XTTS requires a speaker reference, so the backend
+downloads a fixed default reference file into the mounted TTS cache and uses it
+internally. The public API still does not expose `speaker_wav`.
 
 Coqui TTS package support is Python `>=3.9,<3.12`, so the Docker TTS service uses
 the Python 3.11 PyTorch CUDA runtime image.
@@ -114,6 +113,7 @@ Model caches are fixed inside the images and backed by the mounted volumes:
 - ASR Hugging Face cache: `/app/models/hf-cache` via `/mnt/ssd1/whisper/models:/app/models`
 - Coqui cache: `/root/.local/share/tts` via `/mnt/ssd1/whisper/coqui-cache:/root/.local/share/tts`
 - TTS Hugging Face cache: `/root/.local/share/tts/hf-cache`, under the same Coqui cache mount
+- Default XTTS speaker reference: `/root/.local/share/tts/default-speaker.flac`, under the same Coqui cache mount
 
 The TTS container sets `COQUI_TOS_AGREED=1` because XTTS v2 otherwise prompts
 for license acceptance on first load, which fails in Docker with
@@ -212,10 +212,9 @@ Common causes:
 - the Coqui model is still downloading or loading into GPU memory
 - ASR and TTS are both trying to load large models onto the same GPU
 - the GPU still has orphaned model processes from previous containers
-- the selected Coqui model requires a speaker but exposes no built-in speaker names
 - `cannot import name 'BeamSearchScorer' from 'transformers'` means the TTS image
   was built with an incompatible `transformers` release. Rebuild `coqui-tts`;
   this repo pins `transformers==4.44.2` for Coqui `TTS 0.22.x`.
-- `Weights only load failed` for `XttsConfig` is PyTorch 2.6+ checkpoint
-  safety behavior. The service allowlists the trusted Coqui XTTS config class
-  before loading the bundled XTTS v2 model.
+- `Weights only load failed` for XTTS config classes is PyTorch 2.6+ checkpoint
+  safety behavior. The service allowlists the trusted Coqui XTTS config classes
+  before loading XTTS v2.

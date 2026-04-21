@@ -38,7 +38,7 @@ class TTSServiceTests(unittest.TestCase):
         self.assertIn("soundfile", requirements)
         self.assertIn("transformers==4.44.2", requirements)
 
-    def test_load_engine_allowlists_xtts_config_for_torch_weights_only(self):
+    def test_load_engine_prepares_xtts_runtime(self):
         fake_torch = Mock()
         fake_torch.cuda.is_available.return_value = False
         fake_tts = Mock()
@@ -64,6 +64,7 @@ class TTSServiceTests(unittest.TestCase):
                     ),
                 },
             ),
+            patch("tts_service.app.ensure_default_speaker_wav", return_value="/tmp/ref.wav"),
         ):
             bundle = tts_app.load_engine_from_environment()
 
@@ -207,7 +208,7 @@ class TTSServiceTests(unittest.TestCase):
         unload_engine.assert_called_once()
         self.assertGreaterEqual(clear_cuda_cache.call_count, 1)
 
-    def test_coqui_kwargs_uses_default_language_and_matching_builtin_speaker(self):
+    def test_coqui_kwargs_uses_matching_builtin_speaker(self):
         payload = Mock()
         payload.voice = "speaker-2"
         model = FakeCoquiModel()
@@ -216,7 +217,6 @@ class TTSServiceTests(unittest.TestCase):
 
         kwargs = coqui_tts_kwargs(payload, model)
 
-        self.assertEqual(kwargs["language"], DEFAULT_COQUI_LANGUAGE)
         self.assertEqual(kwargs["speaker"], "speaker-2")
 
     def test_coqui_kwargs_falls_back_to_first_builtin_speaker(self):
@@ -230,7 +230,15 @@ class TTSServiceTests(unittest.TestCase):
 
         self.assertEqual(kwargs["speaker"], "speaker-1")
 
-    def test_coqui_kwargs_defaults_to_multilingual_language(self):
+    def test_coqui_kwargs_only_sets_language_for_multilingual_models(self):
+        payload = Mock()
+        model = FakeCoquiModel()
+
+        kwargs = coqui_tts_kwargs(payload, model)
+
+        self.assertNotIn("language", kwargs)
+
+    def test_coqui_kwargs_sets_default_language_for_multilingual_models(self):
         payload = Mock()
         model = FakeCoquiModel()
         model.is_multi_lingual = True
@@ -244,8 +252,16 @@ class TTSServiceTests(unittest.TestCase):
         model = FakeCoquiModel()
         model.is_multi_speaker = True
 
-        with self.assertRaisesRegex(Exception, "requires a speaker"):
-            coqui_tts_kwargs(payload, model)
+        with patch(
+            "tts_service.app.ensure_default_speaker_wav",
+            return_value="/root/.local/share/tts/default-speaker.flac",
+        ):
+            kwargs = coqui_tts_kwargs(payload, model)
+
+        self.assertEqual(
+            kwargs["speaker_wav"],
+            "/root/.local/share/tts/default-speaker.flac",
+        )
 
     def test_healthz_reports_loading_without_blocking(self):
         with (
