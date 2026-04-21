@@ -155,6 +155,20 @@ def is_cuda_oom(exc: BaseException) -> bool:
     return "cuda out of memory" in message or "outofmemoryerror" in message
 
 
+def prepare_outputs_for_decode(outputs: object, processor: object) -> object:
+    """Move generated tensors to the audio tokenizer device before decoding."""
+    audio_tokenizer = getattr(processor, "audio_tokenizer", None)
+    if audio_tokenizer is None or not hasattr(outputs, "to"):
+        return outputs
+
+    try:
+        target_device = next(audio_tokenizer.parameters()).device
+    except (AttributeError, StopIteration):
+        return outputs
+
+    return outputs.to(target_device)
+
+
 def load_engine_from_environment() -> EngineBundle:
     """Load the Higgs processor/model pair with phase-level logging."""
     import torch
@@ -187,7 +201,10 @@ def load_engine_from_environment() -> EngineBundle:
 
     phase_start = time.monotonic()
     LOGGER.info("Loading Higgs processor...")
-    processor = AutoProcessor.from_pretrained(model_name)
+    processor_kwargs = {}
+    if device_map:
+        processor_kwargs["device_map"] = device_map
+    processor = AutoProcessor.from_pretrained(model_name, **processor_kwargs)
     LOGGER.info(
         "Loaded Higgs processor in %.1fs",
         time.monotonic() - phase_start,
@@ -509,7 +526,9 @@ def create_speech(payload: SpeechRequest):
                 top_p=float(os.environ.get("HIGGS_AUDIO_TOP_P", DEFAULT_TOP_P)),
                 top_k=int(os.environ.get("HIGGS_AUDIO_TOP_K", DEFAULT_TOP_K)),
             )
-            decoded = bundle.processor.batch_decode(outputs)
+            decoded = bundle.processor.batch_decode(
+                prepare_outputs_for_decode(outputs, bundle.processor)
+            )
             pcm_bytes = decoded_audio_to_pcm16le(decoded, bundle.processor)
             if should_unload_after_request:
                 unload_engine()

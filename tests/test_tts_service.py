@@ -4,6 +4,7 @@ from unittest.mock import Mock
 from unittest.mock import patch
 
 import numpy as np
+import torch
 from fastapi.testclient import TestClient
 
 import tts_service.app as tts_app
@@ -14,6 +15,7 @@ from tts_service.app import (
     OPENAI_VOICE_ALIASES,
     PUBLIC_BACKEND_TTS_MODEL,
     app,
+    prepare_outputs_for_decode,
 )
 
 
@@ -54,6 +56,23 @@ class FakeProcessor:
             wav_file.setsampwidth(2)
             wav_file.setframerate(DEFAULT_SAMPLING_RATE)
             wav_file.writeframes(pcm_samples.tobytes())
+
+
+class FakeAudioTokenizer:
+    def __init__(self, tensor):
+        self.tensor = tensor
+
+    def parameters(self):
+        return iter([self.tensor])
+
+
+class FakeGeneratedOutputs:
+    def __init__(self):
+        self.target_device = None
+
+    def to(self, target_device):
+        self.target_device = target_device
+        return self
 
 
 class TTSServiceTests(unittest.TestCase):
@@ -118,6 +137,16 @@ class TTSServiceTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         unload_engine.assert_not_called()
+
+    def test_prepare_outputs_for_decode_moves_tensor_to_audio_tokenizer_device(self):
+        processor = Mock()
+        processor.audio_tokenizer = FakeAudioTokenizer(torch.empty(1, device="cpu"))
+        outputs = FakeGeneratedOutputs()
+
+        prepared = prepare_outputs_for_decode(outputs, processor)
+
+        self.assertIs(prepared, outputs)
+        self.assertEqual(outputs.target_device.type, "cpu")
 
     def test_speech_endpoint_reports_cuda_oom_as_service_unavailable(self):
         with (
