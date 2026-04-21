@@ -1,5 +1,6 @@
 import unittest
 import wave
+from pathlib import Path
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -76,6 +77,10 @@ class FakeGeneratedOutputs:
 
 
 class TTSServiceTests(unittest.TestCase):
+    def test_tts_runtime_dependencies_are_declared(self):
+        requirements = Path("tts_service/requirements.txt").read_text()
+        self.assertIn("soundfile", requirements)
+
     def test_openai_voice_aliases_map_to_supported_voice_prompts(self):
         self.assertEqual(OPENAI_VOICE_ALIASES["alloy"], "belinda")
         self.assertEqual(OPENAI_VOICE_ALIASES["ash"], "en_man")
