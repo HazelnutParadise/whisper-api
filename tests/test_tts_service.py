@@ -119,6 +119,59 @@ class TTSServiceTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         unload_engine.assert_not_called()
 
+    def test_speech_endpoint_reports_cuda_oom_as_service_unavailable(self):
+        with (
+            patch("tts_service.app.preload_engine_async", autospec=True),
+            patch(
+                "tts_service.app.get_engine",
+                side_effect=RuntimeError("CUDA out of memory. Tried to allocate 48.00 MiB."),
+            ),
+            patch("tts_service.app.unload_engine", autospec=True) as unload_engine,
+            patch("tts_service.app.clear_cuda_cache", autospec=True) as clear_cuda_cache,
+        ):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/v1/audio/speech",
+                    json={
+                        "model": PUBLIC_BACKEND_TTS_MODEL,
+                        "input": "hello world",
+                        "voice": "alloy",
+                        "response_format": "pcm",
+                    },
+                )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("GPU memory", response.json()["detail"])
+        unload_engine.assert_called_once()
+        clear_cuda_cache.assert_called_once()
+
+    def test_speech_endpoint_reports_generation_errors_as_json(self):
+        fake_engine = EngineBundle(
+            model=FakeModel(response=None),
+            processor=FakeProcessor(decoded=["decoded-audio"]),
+        )
+        fake_engine.model.generate = Mock(side_effect=RuntimeError("decode failed"))
+
+        with (
+            patch("tts_service.app.preload_engine_async", autospec=True),
+            patch("tts_service.app.get_engine", return_value=fake_engine),
+            patch("tts_service.app.unload_engine", autospec=True),
+            patch("tts_service.app.clear_cuda_cache", autospec=True),
+        ):
+            with TestClient(app) as client:
+                response = client.post(
+                    "/v1/audio/speech",
+                    json={
+                        "model": PUBLIC_BACKEND_TTS_MODEL,
+                        "input": "hello world",
+                        "voice": "alloy",
+                        "response_format": "pcm",
+                    },
+                )
+
+        self.assertEqual(response.status_code, 500)
+        self.assertIn("decode failed", response.json()["detail"])
+
     def test_speech_endpoint_accepts_internal_backend_model_from_gateway(self):
         fake_outputs = {"audio_tokens": [1, 2, 3]}
         fake_engine = EngineBundle(

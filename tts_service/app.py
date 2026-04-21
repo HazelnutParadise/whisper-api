@@ -134,6 +134,27 @@ def env_flag(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def clear_cuda_cache() -> None:
+    """Release unreferenced CUDA allocations after failures or unloads."""
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
+    except Exception:
+        LOGGER.exception("Failed to clear CUDA cache.")
+
+
+def is_cuda_oom(exc: BaseException) -> bool:
+    """Detect CUDA OOM without importing torch at module import time."""
+    if exc.__class__.__name__ == "OutOfMemoryError":
+        return True
+    message = str(exc).lower()
+    return "cuda out of memory" in message or "outofmemoryerror" in message
+
+
 def load_engine_from_environment() -> EngineBundle:
     """Load the Higgs processor/model pair with phase-level logging."""
     import torch
@@ -151,12 +172,16 @@ def load_engine_from_environment() -> EngineBundle:
         "HIGGS_AUDIO_DEVICE",
         "cuda" if torch.cuda.is_available() else "cpu",
     )
+    device_map = os.environ.get("HIGGS_AUDIO_DEVICE_MAP")
+    if device_map is None and device.startswith("cuda"):
+        device_map = "auto"
     torch_dtype = torch.bfloat16 if device.startswith("cuda") else torch.float32
 
     LOGGER.info(
-        "Loading Higgs engine: model=%s device=%s dtype=%s",
+        "Loading Higgs engine: model=%s device=%s device_map=%s dtype=%s",
         model_name,
         device,
+        device_map or "none",
         torch_dtype,
     )
 
@@ -170,24 +195,28 @@ def load_engine_from_environment() -> EngineBundle:
 
     phase_start = time.monotonic()
     LOGGER.info("Loading Higgs model weights...")
+    model_kwargs = {"torch_dtype": torch_dtype}
+    if device_map:
+        model_kwargs["device_map"] = device_map
     model = HiggsAudioV2ForConditionalGeneration.from_pretrained(
         model_name,
-        torch_dtype=torch_dtype,
+        **model_kwargs,
     )
     LOGGER.info(
         "Loaded Higgs model weights in %.1fs",
         time.monotonic() - phase_start,
     )
 
-    phase_start = time.monotonic()
-    LOGGER.info("Moving Higgs model to %s...", device)
-    model = model.to(device)
+    if not device_map:
+        phase_start = time.monotonic()
+        LOGGER.info("Moving Higgs model to %s...", device)
+        model = model.to(device)
+        LOGGER.info(
+            "Moved Higgs model to %s in %.1fs",
+            device,
+            time.monotonic() - phase_start,
+        )
     model.eval()
-    LOGGER.info(
-        "Moved Higgs model to %s in %.1fs",
-        device,
-        time.monotonic() - phase_start,
-    )
     LOGGER.info("Higgs engine ready in %.1fs", time.monotonic() - start_time)
     return EngineBundle(model=model, processor=processor)
 
@@ -281,17 +310,7 @@ def unload_engine() -> None:
 
     LOGGER.info("Unloading Higgs engine after TTS request...")
     del engine
-    gc.collect()
-
-    try:
-        import torch
-
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.ipc_collect()
-    except Exception:
-        LOGGER.exception("Failed to fully clear CUDA cache after Higgs unload.")
-
+    clear_cuda_cache()
     LOGGER.info("Higgs engine unloaded.")
 
 
@@ -456,8 +475,10 @@ def create_speech(payload: SpeechRequest):
             detail="stream_format must be omitted or set to `audio`.",
         )
 
-    with _INFERENCE_LOCK:
-        try:
+    should_unload_after_request = env_flag("HIGGS_UNLOAD_AFTER_REQUEST", default=True)
+
+    try:
+        with _INFERENCE_LOCK:
             conversation = build_chat_ml_sample(
                 payload.input,
                 payload.voice,
@@ -490,9 +511,30 @@ def create_speech(payload: SpeechRequest):
             )
             decoded = bundle.processor.batch_decode(outputs)
             pcm_bytes = decoded_audio_to_pcm16le(decoded, bundle.processor)
-        finally:
-            if env_flag("HIGGS_UNLOAD_AFTER_REQUEST", default=True):
+            if should_unload_after_request:
                 unload_engine()
+    except HTTPException:
+        unload_engine()
+        raise
+    except Exception as exc:
+        unload_engine()
+        clear_cuda_cache()
+        if is_cuda_oom(exc):
+            LOGGER.exception("Higgs speech generation failed because CUDA memory is exhausted.")
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "TTS backend ran out of GPU memory while loading or "
+                    "generating Higgs audio. Retry after GPU memory is freed, "
+                    "reduce HIGGS_AUDIO_MAX_NEW_TOKENS, or place ASR and TTS "
+                    "on separate GPUs."
+                ),
+            ) from exc
+        LOGGER.exception("Higgs speech generation failed.")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Higgs speech generation failed: {exc}",
+        ) from exc
 
     if payload.stream:
         return StreamingResponse(iter([pcm_bytes]), media_type="audio/pcm")

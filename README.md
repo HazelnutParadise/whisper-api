@@ -141,6 +141,7 @@ WHISPERX_UNLOAD_AFTER_REQUEST=1
 ASR_MODELS_PATH=/mnt/ssd1/whisper/models
 HIGGS_CACHE_PATH=/mnt/ssd1/whisper/higgs-cache
 HIGGS_AUDIO_MODEL=eustlb/higgs-audio-v2-generation-3B-base
+HIGGS_AUDIO_DEVICE_MAP=auto
 HIGGS_PRELOAD_ON_STARTUP=0
 HIGGS_HEALTH_REQUIRE_MODEL=0
 HIGGS_UNLOAD_AFTER_REQUEST=1
@@ -165,6 +166,11 @@ By default `WHISPERX_UNLOAD_AFTER_REQUEST=1` and
 STT/TTS request. This keeps GPU memory available when alternating between ASR
 and TTS on single-GPU hosts. Set either value to `0` only if you prefer faster
 repeated requests for that service and have enough VRAM for both models.
+
+By default `HIGGS_AUDIO_DEVICE_MAP=auto` follows the upstream Transformers
+Higgs Audio loading path. This lets Transformers/Accelerate avoid the older
+"load on CPU, then move the whole model to CUDA" step that can fail on 12GB
+GPUs while moving the model.
 
 On single-GPU hosts, keep `ASR_CUDA_VISIBLE_DEVICES` and
 `HIGGS_CUDA_VISIBLE_DEVICES` on the same GPU only if there is enough VRAM for
@@ -254,8 +260,20 @@ Common causes:
 
 - the native Higgs model is still downloading or loading into GPU memory
 - ASR and TTS are both trying to load large models onto the same GPU
+- the GPU still has orphaned model processes from previous containers
 - the Hugging Face `hf-xet` download path is failing TLS handshakes in the container
 - the container exited before the native `/healthz` endpoint became ready
+
+If the response is `503` with "TTS backend ran out of GPU memory", check:
+
+```bash
+nvidia-smi
+docker compose ps
+docker compose logs --tail 100 higgs-tts
+```
+
+Then free old containers/processes or reduce `HIGGS_AUDIO_MAX_NEW_TOKENS`.
+On a multi-GPU machine, prefer splitting ASR and TTS across separate GPUs.
 
 The Higgs Audio model and tokenizer pages are public on Hugging Face, so this
 failure is usually not caused by gated-model approval. Still, setting `HF_TOKEN`
