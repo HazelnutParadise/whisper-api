@@ -81,10 +81,20 @@ def is_cuda_oom(exc: BaseException) -> bool:
     return "cuda out of memory" in message or "outofmemoryerror" in message
 
 
+def allow_coqui_xtts_checkpoint_globals() -> None:
+    """Allow PyTorch 2.6+ to load trusted Coqui XTTS checkpoint config objects."""
+    import torch
+    from TTS.tts.configs.xtts_config import XttsConfig
+
+    torch.serialization.add_safe_globals([XttsConfig])
+
+
 def load_engine_from_environment() -> EngineBundle:
     """Load the Coqui TTS model with phase-level logging."""
     import torch
     from TTS.api import TTS
+
+    allow_coqui_xtts_checkpoint_globals()
 
     start_time = time.monotonic()
     model_name = DEFAULT_BACKEND_TTS_MODEL

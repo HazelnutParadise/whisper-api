@@ -216,3 +216,6 @@ Common causes:
 - `cannot import name 'BeamSearchScorer' from 'transformers'` means the TTS image
   was built with an incompatible `transformers` release. Rebuild `coqui-tts`;
   this repo pins `transformers==4.44.2` for Coqui `TTS 0.22.x`.
+- `Weights only load failed` for `XttsConfig` is PyTorch 2.6+ checkpoint
+  safety behavior. The service allowlists the trusted Coqui XTTS config class
+  before loading the bundled XTTS v2 model.

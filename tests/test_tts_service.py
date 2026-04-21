@@ -38,6 +38,33 @@ class TTSServiceTests(unittest.TestCase):
         self.assertIn("soundfile", requirements)
         self.assertIn("transformers==4.44.2", requirements)
 
+    def test_load_engine_allowlists_xtts_config_for_torch_weights_only(self):
+        fake_torch = Mock()
+        fake_torch.cuda.is_available.return_value = False
+        fake_tts = Mock()
+        fake_tts_cls = Mock(return_value=fake_tts)
+        fake_config = type("FakeXttsConfig", (), {})
+
+        with (
+            patch.dict(
+                "sys.modules",
+                {
+                    "torch": fake_torch,
+                    "TTS.api": Mock(TTS=fake_tts_cls),
+                    "TTS.tts.configs.xtts_config": Mock(XttsConfig=fake_config),
+                },
+            ),
+        ):
+            bundle = tts_app.load_engine_from_environment()
+
+        fake_torch.serialization.add_safe_globals.assert_called_once_with([fake_config])
+        fake_tts_cls.assert_called_once_with(
+            model_name=DEFAULT_BACKEND_TTS_MODEL,
+            progress_bar=False,
+        )
+        fake_tts.to.assert_called_once_with("cpu")
+        self.assertEqual(bundle.model, fake_tts)
+
     def test_speech_endpoint_returns_pcm_audio_from_coqui_engine(self):
         fake_model = FakeCoquiModel()
         fake_engine = EngineBundle(model=fake_model)
