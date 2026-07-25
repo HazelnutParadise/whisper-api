@@ -429,6 +429,35 @@ class TranscriptionsEndpointTests(unittest.TestCase):
 
         self.assertEqual(mapping["SPEAKER_99"], "SPEAKER_01")
 
+    def test_chunking_decision_reads_audio_duration_not_file_size(self):
+        # A 16 kHz mono mp3 holds roughly 29 MB per hour, so a byte threshold
+        # waves multi-hour recordings through unchunked while splitting a short
+        # lossless upload for no reason. Duration is what the pipeline actually
+        # struggles with, so that is what the decision reads.
+        with patch.object(
+            whisper_app, "get_audio_duration_seconds", return_value=7200.0
+        ):
+            self.assertTrue(
+                whisper_app.should_use_chunked_transcription("small-but-long.mp3")
+            )
+
+        with patch.object(
+            whisper_app, "get_audio_duration_seconds", return_value=60.0
+        ):
+            self.assertFalse(
+                whisper_app.should_use_chunked_transcription("large-but-short.wav")
+            )
+
+    def test_chunking_decision_falls_back_to_single_pass_when_ffprobe_fails(self):
+        with patch.object(
+            whisper_app,
+            "get_audio_duration_seconds",
+            side_effect=HTTPException(status_code=500, detail="unreadable"),
+        ):
+            self.assertFalse(
+                whisper_app.should_use_chunked_transcription("unreadable.bin")
+            )
+
     def test_advanced_transcription_uses_chunked_pipeline_only_when_enabled(self):
         stack, _ = self.build_context({"HF_TOKEN": "hf-test-token"})
         chunked_payload = whisper_app.TranscriptionAdvancedResponse(

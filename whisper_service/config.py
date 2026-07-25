@@ -11,7 +11,12 @@ WHISPERX_CHUNK_SECONDS = int(os.getenv("WHISPERX_CHUNK_SECONDS", "600"))
 WHISPERX_CHUNK_OVERLAP_SECONDS = float(
     os.getenv("WHISPERX_CHUNK_OVERLAP_SECONDS", "3")
 )
-WHISPERX_AUTO_CHUNK_MIN_MB = float(os.getenv("WHISPERX_AUTO_CHUNK_MIN_MB", "100"))
+# Chunking is keyed on audio duration, not upload size: a 16 kHz mono mp3 runs
+# about 29 MB per hour while lossless audio of the same length runs past 500 MB,
+# so a byte threshold splits the two formats at wildly different lengths.
+WHISPERX_AUTO_CHUNK_MIN_SECONDS = float(
+    os.getenv("WHISPERX_AUTO_CHUNK_MIN_SECONDS", "3600")
+)
 WHISPERX_CHUNK_SPEAKER_MERGE_MIN_SIM = float(
     os.getenv("WHISPERX_CHUNK_SPEAKER_MERGE_MIN_SIM", "0.7")
 )

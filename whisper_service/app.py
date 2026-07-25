@@ -17,7 +17,7 @@ from whisper_service.config import (
     MODELS_DOWNLOAD_ROOT,
     SUPPORTED_TRANSCRIPTION_MODELS,
     UPLOAD_FOLDER,
-    WHISPERX_AUTO_CHUNK_MIN_MB,
+    WHISPERX_AUTO_CHUNK_MIN_SECONDS,
     WHISPERX_BATCH_SIZE,
     WHISPERX_CHUNK_OVERLAP_SECONDS,
     WHISPERX_CHUNK_SECONDS,
@@ -491,14 +491,17 @@ def build_whisperx_response(
 
 def should_use_chunked_transcription(filepath: str) -> bool:
     """Return whether the upload should use chunked transcription."""
-    if WHISPERX_AUTO_CHUNK_MIN_MB <= 0:
+    if WHISPERX_AUTO_CHUNK_MIN_SECONDS <= 0:
         return False
 
-    threshold_bytes = int(WHISPERX_AUTO_CHUNK_MIN_MB * 1024 * 1024)
     try:
-        return os.path.getsize(filepath) >= threshold_bytes
-    except OSError:
+        duration_seconds = get_audio_duration_seconds(filepath)
+    except HTTPException:
+        # ffprobe could not read the container, but WhisperX may still decode
+        # it. Fall back to the single-pass path rather than failing outright.
         return False
+
+    return duration_seconds >= WHISPERX_AUTO_CHUNK_MIN_SECONDS
 
 
 def get_audio_duration_seconds(filepath: str) -> float:
