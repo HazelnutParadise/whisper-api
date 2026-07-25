@@ -258,3 +258,15 @@ func TestTranscriptionsEndpointProxiesMultipartBodyToASRBackend(t *testing.T) {
 		t.Fatalf("unexpected proxy body: %q", rec.Body.String())
 	}
 }
+
+// Transcribing a long recording can keep the ASR request open for hours, so the
+// gateway must not impose a deadline of its own. Cancellation belongs to the
+// caller's context, which handleTranscriptions already forwards upstream.
+func TestASRClientHasNoOverallTimeoutSoLongTranscriptionsAreNotCutOff(t *testing.T) {
+	if got := NewConfigFromEnv().HTTPClient.Timeout; got != 0 {
+		t.Fatalf("expected no timeout on the configured ASR client, got %s", got)
+	}
+	if got := (Config{}).client().Timeout; got != 0 {
+		t.Fatalf("expected no timeout on the fallback ASR client, got %s", got)
+	}
+}
